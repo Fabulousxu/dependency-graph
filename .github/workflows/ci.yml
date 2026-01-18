@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build
+        shell: powershell
+        run: |
+          mkdir build -Force
+          cd build
+          cmake -G Ninja ..
+          ninja
+
+      - name: Query Dependencies Correctness Test
+        shell: powershell
+        working-directory: build
+        run: |
+          ./query_dependencies_correctness_test --dataset E:/MyProjects/dependency-graph/datasets/repos_388.jsonl `
+                                                --test-package-count 1000 `
+                                                --max-depth 10
+
+      - name: Query Dependencies Benchmark
+        shell: powershell
+        working-directory: build
+        run: |
+          ./query_dependencies_benchmark --dataset E:/MyProjects/dependency-graph/datasets/repos_388.jsonl `
+                                         --test-package-count 1000 `
+                                         --max-depth 10

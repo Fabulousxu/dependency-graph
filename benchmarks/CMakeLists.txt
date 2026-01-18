@@ -1,0 +1,2 @@
+add_executable(query_dependencies_benchmark query_dependencies_benchmark.cpp)
+target_link_libraries(query_dependencies_benchmark PRIVATE libdepgraph)

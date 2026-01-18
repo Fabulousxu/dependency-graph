@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.18)
+set(CMAKE_CXX_COMPILER cl)
+set(CMAKE_CUDA_COMPILER nvcc)
+set(CMAKE_BUILD_TYPE Release)
+project(depgraph LANGUAGES CXX CUDA)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+include_directories(include thirdparty)
+add_subdirectory(src)
+add_subdirectory(tests)
+add_subdirectory(benchmarks)
