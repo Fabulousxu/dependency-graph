@@ -1,8 +1,10 @@
 add_library(libdepgraph
-        dependency_graph.cpp
-        gpu_dependency_graph.cu
+        disk_graph.cpp
+        buffer_graph.cpp
+        gpu_graph.cu
+        dependency_graph.cu
         package_loader.cpp
 )
 
 add_executable(console console.cpp)
-target_link_libraries(console libdepgraph)
+target_link_libraries(console PRIVATE libdepgraph)

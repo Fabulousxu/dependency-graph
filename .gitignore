@@ -3,6 +3,7 @@
 __pycache__/
 actions-runner/
 build/
+data/
 datasets/
 docs/
 repos/

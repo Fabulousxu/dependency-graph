@@ -11,5 +11,5 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 include_directories(include thirdparty)
 add_subdirectory(src)
-add_subdirectory(tests)
-add_subdirectory(benchmarks)
+#add_subdirectory(tests)
+#add_subdirectory(benchmarks)

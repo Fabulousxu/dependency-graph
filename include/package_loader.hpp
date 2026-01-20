@@ -10,10 +10,16 @@ public:
   bool load_from_dataset_file(const std::string &dataset_filename, bool verbose = false) const;
 
 private:
+  struct DependencyItem {
+    std::string_view package_name;
+    std::string_view version_constraint;
+    ArchitectureType architecture_constraint;
+    GroupId group;
+  };
+
   DependencyGraph &graph_;
 
-  struct DependencyItem;
-  DependencyItem parse_dependency(std::string_view raw_dep, GroupId group) const;
-  std::vector<DependencyItem> parse_dependencies(std::string_view raw_deps, GroupId &group) const;
-  void load_raw_packages(std::string_view raw_pkgs) const;
+  DependencyItem parse_dependency_(std::string_view raw_dep, GroupId group) const;
+  std::vector<DependencyItem> parse_dependencies_(std::string_view raw_deps, GroupId &group) const;
+  void load_raw_packages_(std::string_view raw_pkgs) const;
 };
