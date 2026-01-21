@@ -28,20 +28,9 @@ public:
   using difference_type = std::ptrdiff_t;
 
   DiskVector(std::string_view path, std::size_t chunk_bytes = kDefaultChunkBytes)
-    : path_{path}, chunk_bytes_{chunk_bytes}, size_{0} {
-    if (std::filesystem::exists(path_)) {
-      if (!std::filesystem::is_regular_file(path_)) throw std::ios_base::failure{"Not a regular file: " + path_};
-    } else if (!std::ofstream{path_}) throw std::ios_base::failure{"Failed to create file: " + path_};
-    auto file_size = std::filesystem::file_size(path_);
-    auto chunk_count = file_size != 0 ? (file_size + chunk_bytes_ - 1) / chunk_bytes_ : 1;
-    std::filesystem::resize_file(path_, chunk_count * chunk_bytes_);
-    std::error_code error;
-    mmap_.map(path_, error);
-    if (error) throw std::ios_base::failure{"Failed to map file: " + path_};
-    data_ = reinterpret_cast<T *>(mmap_.data());
-  }
+    : chunk_bytes_{chunk_bytes} { open(path); }
 
-  ~DiskVector() { sync(); }
+  ~DiskVector() { close(); }
 
   std::size_t size() const noexcept { return size_; }
   std::size_t length() const noexcept { return size_; }
@@ -119,10 +108,37 @@ public:
     return data_[size_ - 1];
   }
 
+  std::size_t chunk_bytes() const noexcept { return chunk_bytes_; }
+  void set_chunk_bytes(std::size_t chunk_bytes) noexcept { chunk_bytes_ = chunk_bytes; }
+
+  void open(std::string_view path) {
+    if (mmap_.is_open()) close();
+    path_ = path;
+    std::filesystem::create_directories(std::filesystem::path(path_).parent_path());
+    if (std::filesystem::exists(path_)) {
+      if (!std::filesystem::is_regular_file(path_)) throw std::ios_base::failure{"Not a regular file: " + path_};
+    } else if (!std::ofstream{path_}) throw std::ios_base::failure{"Failed to create file: " + path_};
+    auto file_size = std::filesystem::file_size(path_);
+    auto chunk_count = file_size != 0 ? (file_size + chunk_bytes_ - 1) / chunk_bytes_ : 1;
+    std::filesystem::resize_file(path_, chunk_count * chunk_bytes_);
+    std::error_code error;
+    mmap_.map(path_, error);
+    if (error) throw std::ios_base::failure{"Failed to map file: " + path_};
+    data_ = reinterpret_cast<T *>(mmap_.data());
+    size_ = 0;
+  }
+
   void sync() {
     std::error_code error;
     mmap_.sync(error);
     if (error) throw std::ios_base::failure{"Failed to sync file: " + path_};
+  }
+
+  void close() {
+    sync();
+    mmap_.unmap();
+    data_ = nullptr;
+    size_ = 0;
   }
 
 private:

@@ -9,13 +9,13 @@
 #include "string_pool.hpp"
 #include "symbol_table.hpp"
 
-constexpr std::size_t kDefaultMemoryThreshold = 512 * 1024 * 1024;
+constexpr std::size_t kDefaultMemoryThreshold = 1024 * 1024 * 1024;
 
 class DependencyGraph {
 public:
   DependencyGraph(std::string_view path, std::size_t memory_thresh = kDefaultMemoryThreshold,
     std::size_t chunk_bytes = kDefaultChunkBytes);
-  ~DependencyGraph() = default;
+  ~DependencyGraph() { flush_to_disk(); }
 
   SymbolTable<ArchitectureType> &architectures() { return architectures_; }
   const SymbolTable<ArchitectureType> &architectures() const { return architectures_; }
@@ -42,20 +42,15 @@ public:
 
   void sync_to_gpu() { gpu_graph_.build(*this); }
   void flush_to_disk();
-  void flush_to_disk_if_needed();
+  bool flush_to_disk_if_needed();
+  std::size_t memory_threshold() const noexcept { return memory_threshold_; }
   void set_memory_threshold(std::size_t memory_thresh) noexcept { memory_threshold_ = memory_thresh; }
-  std::size_t memory_usage() const noexcept;
+  std::size_t estimated_memory_usage() const noexcept;
 
   DependencyResult query_dependencies(std::string_view name, std::string_view version, std::string_view arch,
     std::size_t depth, bool use_gpu) const;
 
-  DependencyResult query_dependencies_on_disk(std::string_view name, std::string_view version, std::string_view arch,
-    std::size_t depth) const;
-
   DependencyResult query_dependencies_on_buffer(std::string_view name, std::string_view version, std::string_view arch,
-    std::size_t depth) const;
-
-  DependencyResult query_dependencies_on_gpu(std::string_view name, std::string_view version, std::string_view arch,
     std::size_t depth) const;
 
 private:
@@ -66,4 +61,7 @@ private:
   BufferGraph buf_graph_;
   GpuGraph gpu_graph_;
   std::size_t memory_threshold_;
+
+  DependencyResult query_dependencies_on_disk_(std::vector<VersionId> &frontier, std::size_t depth) const;
+  DependencyResult query_dependencies_on_gpu_(std::vector<VersionId> &frontier, std::size_t depth) const;
 };

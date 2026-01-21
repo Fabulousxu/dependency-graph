@@ -34,80 +34,35 @@ void DependencyGraph::flush_to_disk() {
   buf_graph_.clear();
 }
 
-void DependencyGraph::flush_to_disk_if_needed() {
-  if (memory_usage() >= memory_threshold_) flush_to_disk();
+bool DependencyGraph::flush_to_disk_if_needed() {
+  bool needed = estimated_memory_usage() >= memory_threshold_;
+  if (needed) flush_to_disk();
+  return needed;
 }
 
-std::size_t DependencyGraph::memory_usage() const noexcept {
-  auto total = sizeof(DependencyGraph);
-  total += architectures_.memory_usage() - sizeof(SymbolTable<ArchitectureType>);
-  total += dependency_types_.memory_usage() - sizeof(SymbolTable<DependencyType>);
-  total += buf_graph_.memory_usage() - sizeof(BufferGraph);
-  return total;
+std::size_t DependencyGraph::estimated_memory_usage() const noexcept {
+  return sizeof(DependencyGraph) + buf_graph_.estimated_memory_usage() - sizeof(BufferGraph);
 }
 
 DependencyResult DependencyGraph::query_dependencies(std::string_view name, std::string_view version,
   std::string_view arch, std::size_t depth, bool use_gpu) const {
-  if (use_gpu) return query_dependencies_on_gpu(name, version, arch, depth);
-  return query_dependencies_on_disk(name, version, arch, depth);
-}
-
-DependencyResult DependencyGraph::query_dependencies_on_disk(std::string_view name, std::string_view version,
-  std::string_view arch, std::size_t depth) const {
-  DependencyResult result{depth};
   std::vector<VersionId> frontier;
-  auto pview = get_package(name);
-  if (!pview.has_value()) return result;
-  for (const auto &vview : pview->versions()) {
-    if (!version.empty() && vview.version != version) continue;
-    if (!arch.empty() && vview.architecture != arch) continue;
-    frontier.emplace_back(vview.id);
-  }
-  if (frontier.empty()) return result;
-
-  std::unordered_set<VersionId> visited_vids{frontier.begin(), frontier.end()};
-  for (auto level = 0; level < depth; level++) {
-    if (frontier.empty()) break;
-    std::unordered_set<DependencyItem> visited_direct_items;
-    std::vector<VersionId> next;
-
-    for (auto vid : frontier) {
-      auto vview = get_version(vid);
-      std::vector<DependencyGroup> curr_grps;
-      std::vector<std::unordered_set<DependencyItem>> visited_grp_items;
-
-      for (const auto &dview : vview.dependencies()) {
-        auto item = to_item(dview);
-        if (dview.group > 0) {
-          if (curr_grps.size() < dview.group) {
-            curr_grps.resize(dview.group);
-            visited_grp_items.resize(dview.group);
-          }
-          if (visited_grp_items[dview.group - 1].emplace(item).second)
-            curr_grps[dview.group - 1].emplace_back(std::move(item));
-        } else if (visited_direct_items.emplace(item).second)
-          result[level].direct_dependencies.emplace_back(std::move(item));
-
-        if (level + 1 < depth && dview.dependency_type == "Depends" && dview.group == 0) {
-          for (const auto &next_vview : dview.to_package().versions()) {
-            if (visited_vids.contains(next_vview.id)) continue;
-            bool match = false;
-            if (dview.architecture_constraint == "native")
-              match = next_vview.architecture == vview.architecture || next_vview.architecture == "all";
-            else if (dview.architecture_constraint == "any") match = true;
-            else match = next_vview.architecture == dview.architecture_constraint;
-            if (match) {
-              next.emplace_back(next_vview.id);
-              visited_vids.emplace(next_vview.id);
-            }
-          }
-        }
+  auto it = disk_graph_.name_to_package_id_.find(name);
+  if (it != disk_graph_.name_to_package_id_.end()) {
+    const auto &pnode = disk_graph_.package_nodes_[it->second];
+    for (auto vlid = pnode.version_list_id; vlid != DiskGraph::kVersionListEndId;) {
+      const auto &vlist = disk_graph_.version_lists_[vlid];
+      for (auto vid = vlist.version_id_begin; vid < vlist.version_id_begin + vlist.version_count; vid++) {
+        const auto &vnode = disk_graph_.version_nodes_[vid];
+        auto vstr = string_pool_.get({vnode.version_offset, vnode.version_length});
+        if (!version.empty() && vstr != version) continue;
+        if (!arch.empty() && architectures_.get(vnode.architecture) != arch) continue;
+        frontier.emplace_back(vid);
       }
-      for (auto &grp : curr_grps) result[level].or_dependencies.emplace_back(std::move(grp));
+      vlid = vlist.next_version_list_id;
     }
-    frontier = std::move(next);
   }
-  return result;
+  return use_gpu ? query_dependencies_on_gpu_(frontier, depth) : query_dependencies_on_disk_(frontier, depth);
 }
 
 DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view name, std::string_view version,
@@ -115,18 +70,18 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
   DependencyResult result{depth};
   std::vector<VersionId> frontier;
   auto it = buf_graph_.name_to_package_id_.find(name);
-  if (it == buf_graph_.name_to_package_id_.end()) return result;
-  for (auto vid : buf_graph_.package_nodes_[it->second].version_ids) {
-    const auto &vnode = buf_graph_.version_nodes_[vid];
-    if (!version.empty() && vnode.version != version) continue;
-    if (!arch.empty() && architectures_.get(vnode.architecture) != arch) continue;
-    frontier.emplace_back(vid);
+  if (it != buf_graph_.name_to_package_id_.end()) {
+    for (auto vid : buf_graph_.package_nodes_[it->second].version_ids) {
+      const auto &vnode = buf_graph_.version_nodes_[vid];
+      if (!version.empty() && vnode.version != version) continue;
+      if (!arch.empty() && architectures_.get(vnode.architecture) != arch) continue;
+      frontier.emplace_back(vid);
+    }
   }
   if (frontier.empty()) return result;
-
   std::unordered_set<VersionId> visited_vids{frontier.begin(), frontier.end()};
+
   for (auto level = 0; level < depth; level++) {
-    if (frontier.empty()) break;
     std::unordered_set<DependencyItem> visited_direct_items;
     std::vector<VersionId> next;
 
@@ -138,10 +93,12 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
       for (auto did : vnode.dependency_ids) {
         const auto &dedge = buf_graph_.dependency_edges_[did];
         DependencyItem item;
+        const auto &tpnode = buf_graph_.package_nodes_[dedge.to_package_id];
         item.package_name = buf_graph_.package_nodes_[dedge.to_package_id].name;
         item.dependency_type = dependency_types_.get(dedge.dependency_type);
         item.version_constraint = dedge.version_constraint;
         item.architecture_constraint = architectures_.get(dedge.architecture_constraint);
+
         if (dedge.group > 0) {
           if (curr_grps.size() < dedge.group) {
             curr_grps.resize(dedge.group);
@@ -152,8 +109,7 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
         } else if (visited_direct_items.emplace(item).second)
           result[level].direct_dependencies.emplace_back(std::move(item));
 
-        if (level + 1 < depth && dependency_types_.get(dedge.dependency_type) == "Depends" && dedge.group == 0) {
-          auto tpnode = buf_graph_.package_nodes_[dedge.to_package_id];
+        if (level + 1 < depth && dependency_types_.get(dedge.dependency_type) == "Depends" && dedge.group == 0)
           for (auto next_vid : tpnode.version_ids) {
             if (visited_vids.contains(next_vid)) continue;
             const auto &next_vnode = buf_graph_.version_nodes_[next_vid];
@@ -168,9 +124,72 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
               visited_vids.emplace(next_vid);
             }
           }
-        }
       }
-      for (auto &grp : curr_grps) result[level].or_dependencies.emplace_back(std::move(grp));
+      for (auto &grp : curr_grps) if (!grp.empty()) result[level].or_dependencies.emplace_back(std::move(grp));
+    }
+    frontier = std::move(next);
+    if (frontier.empty()) break;
+  }
+  return result;
+}
+
+DependencyResult DependencyGraph::query_dependencies_on_disk_(std::vector<VersionId> &frontier,
+  std::size_t depth) const {
+  DependencyResult result{depth};
+  if (frontier.empty()) return result;
+  std::unordered_set<VersionId> visited_vids{frontier.begin(), frontier.end()};
+
+  for (auto level = 0; level < depth; level++) {
+    if (frontier.empty()) break;
+    std::unordered_set<DependencyItem> visited_direct_items;
+    std::vector<VersionId> next;
+
+    for (auto vid : frontier) {
+      const auto &vnode = disk_graph_.version_nodes_[vid];
+      std::vector<DependencyGroup> curr_grps;
+      std::vector<std::unordered_set<DependencyItem>> visited_grp_items;
+
+      for (auto did = vnode.dependency_id_begin; did < vnode.dependency_id_begin + vnode.dependency_count; did++) {
+        const auto &dedge = disk_graph_.dependency_edges_[did];
+        DependencyItem item;
+        const auto &tpnode = disk_graph_.package_nodes_[dedge.to_package_id];
+        item.package_name = string_pool_.get({tpnode.name_offset, tpnode.name_length});
+        item.dependency_type = dependency_types_.get(dedge.dependency_type);
+        item.version_constraint = string_pool_.get({dedge.version_constraint_offset, dedge.version_constraint_length});
+        item.architecture_constraint = architectures_.get(dedge.architecture_constraint);
+
+        if (dedge.group > 0) {
+          if (curr_grps.size() < dedge.group) {
+            curr_grps.resize(dedge.group);
+            visited_grp_items.resize(dedge.group);
+          }
+          if (visited_grp_items[dedge.group - 1].emplace(item).second)
+            curr_grps[dedge.group - 1].emplace_back(std::move(item));
+        } else if (visited_direct_items.emplace(item).second)
+          result[level].direct_dependencies.emplace_back(std::move(item));
+
+        if (level + 1 < depth && dependency_types_.get(dedge.dependency_type) == "Depends" && dedge.group == 0)
+          for (auto vlid = tpnode.version_list_id; vlid != DiskGraph::kVersionListEndId;) {
+            const auto &vlist = disk_graph_.version_lists_[vlid];
+            for (auto next_vid = vlist.version_id_begin; next_vid < vlist.version_id_begin + vlist.version_count;
+                 next_vid++) {
+              if (visited_vids.contains(next_vid)) continue;
+              const auto &next_vnode = disk_graph_.version_nodes_[next_vid];
+              bool match = false;
+              if (architectures_.get(dedge.architecture_constraint) == "native")
+                match = next_vnode.architecture == vnode.architecture
+                  || architectures_.get(next_vnode.architecture) == "all";
+              else if (architectures_.get(dedge.architecture_constraint) == "any") match = true;
+              else match = next_vnode.architecture == dedge.architecture_constraint;
+              if (match) {
+                next.emplace_back(next_vid);
+                visited_vids.emplace(next_vid);
+              }
+            }
+            vlid = vlist.next_version_list_id;
+          }
+      }
+      for (auto &grp : curr_grps) if (!grp.empty()) result[level].or_dependencies.emplace_back(std::move(grp));
     }
     frontier = std::move(next);
   }
@@ -199,6 +218,7 @@ __global__ void query_dependency_kernel(const GpuGraph::PackageNode *package_nod
       const auto &tpnode = package_nodes[dedge.to_package_id];
       for (auto next_vid = tpnode.version_id_begin; next_vid < tpnode.version_id_begin + tpnode.version_count;
            next_vid++) {
+        if (visited[next_vid] == mark) continue;
         const auto &next_vnode = version_nodes[next_vid];
         bool match = false;
         if (dedge.architecture_constraint == 0)
@@ -217,22 +237,15 @@ __global__ void query_dependency_kernel(const GpuGraph::PackageNode *package_nod
   }
 }
 
-DependencyResult DependencyGraph::query_dependencies_on_gpu(std::string_view name, std::string_view version,
-  std::string_view arch, std::size_t depth) const {
+DependencyResult DependencyGraph::query_dependencies_on_gpu_(std::vector<VersionId> &frontier,
+  std::size_t depth) const {
   DependencyResult result{depth};
-  std::vector<VersionId> frontier;
-  auto pview = get_package(name);
-  if (!pview.has_value()) return result;
-  for (const auto &vview : pview->versions()) {
-    if (!version.empty() && vview.version != version) continue;
-    if (!arch.empty() && vview.architecture != arch) continue;
-    frontier.emplace_back(gpu_graph_.to_gpu_version_id_[vview.id]);
-  }
-  if (frontier.empty()) return result;
-
   std::size_t frontier_size = frontier.size(), dependency_count;
   std::vector<DependencyId> dependency_ids_;
-  cudaMemcpy(gpu_graph_.d_frontier_, frontier.data(), frontier.size() * sizeof(VersionId), cudaMemcpyHostToDevice);
+  for (auto &vid : frontier) vid = gpu_graph_.to_gpu_version_id_[vid];
+  if (frontier_size > 0)
+    cudaMemcpy(gpu_graph_.d_frontier_, frontier.data(), frontier.size() * sizeof(VersionId), cudaMemcpyHostToDevice);
+
   for (auto level = 0; level < depth; level++) {
     if (frontier_size == 0) break;
     cudaMemset(gpu_graph_.d_next_size_, 0, sizeof(std::size_t));
@@ -254,18 +267,24 @@ DependencyResult DependencyGraph::query_dependencies_on_gpu(std::string_view nam
     std::unordered_set<DependencyItem> visited_direct_items;
     std::unordered_map<VersionId, std::vector<std::unordered_set<DependencyItem>>> visited_grp_items_by_version;
     for (auto did : dependency_ids_) {
-      auto dview = get_dependency(did);
-      auto item = to_item(dview);
-      if (dview.group != 0) {
-        auto vid = dview.from_version().id;
+      const auto &dedge = disk_graph_.dependency_edges_[did];
+      DependencyItem item;
+      const auto &tpnode = disk_graph_.package_nodes_[dedge.to_package_id];
+      item.package_name = string_pool_.get({tpnode.name_offset, tpnode.name_length});
+      item.dependency_type = dependency_types_.get(dedge.dependency_type);
+      item.version_constraint = string_pool_.get({dedge.version_constraint_offset, dedge.version_constraint_length});
+      item.architecture_constraint = architectures_.get(dedge.architecture_constraint);
+
+      if (dedge.group != 0) {
+        auto vid = dedge.from_version_id;
         auto &curr_grps = grps_by_version[vid];
         auto &curr_visited_grp_items = visited_grp_items_by_version[vid];
-        if (dview.group > curr_grps.size()) {
-          curr_grps.resize(dview.group);
-          curr_visited_grp_items.resize(dview.group);
+        if (dedge.group > curr_grps.size()) {
+          curr_grps.resize(dedge.group);
+          curr_visited_grp_items.resize(dedge.group);
         }
-        if (curr_visited_grp_items[dview.group - 1].emplace(item).second)
-          curr_grps[dview.group - 1].emplace_back(std::move(item));
+        if (curr_visited_grp_items[dedge.group - 1].emplace(item).second)
+          curr_grps[dedge.group - 1].emplace_back(std::move(item));
       } else if (visited_direct_items.emplace(item).second)
         result[level].direct_dependencies.emplace_back(std::move(item));
     }

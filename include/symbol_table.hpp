@@ -2,7 +2,6 @@
 #include <concepts>
 #include <initializer_list>
 #include <optional>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -31,16 +30,6 @@ public:
     if (!succ) return it->second;
     symbols_.emplace_back(symbol);
     return static_cast<Id>(symbols_.size() - 1);
-  }
-
-  std::size_t memory_usage() const noexcept {
-    auto total = sizeof(SymbolTable);
-    total += symbols_.capacity() * sizeof(std::string);
-    for (const auto &symbol : symbols_) total += symbol.capacity() * sizeof(char);
-    total += id_to_symbol_.bucket_count() * sizeof(void *);
-    total += id_to_symbol_.size() * (sizeof(std::pair<std::string, Id>) + sizeof(void *));
-    for (const auto &symbol : id_to_symbol_ | std::views::keys) total += symbol.capacity() * sizeof(char);
-    return total;
   }
 
 private:

@@ -48,19 +48,19 @@ void BufferGraph::clear() {
   name_to_package_id_.clear();
 }
 
-std::size_t BufferGraph::memory_usage() const noexcept {
+std::size_t BufferGraph::estimated_memory_usage() const noexcept {
   auto total = sizeof(BufferGraph);
-  total += package_nodes_.capacity() * sizeof(PackageNode);
+  total += package_nodes_.size() * sizeof(PackageNode);
   for (const auto &pnode : package_nodes_) {
     total += pnode.name.capacity() * sizeof(char);
     total += pnode.version_ids.capacity() * sizeof(VersionId);
   }
-  total += version_nodes_.capacity() * sizeof(VersionNode);
+  total += version_nodes_.size() * sizeof(VersionNode);
   for (const auto &vnode : version_nodes_) {
     total += vnode.version.capacity() * sizeof(char);
     total += vnode.dependency_ids.capacity() * sizeof(DependencyId);
   }
-  total += dependency_edges_.capacity() * sizeof(DependencyEdge);
+  total += dependency_edges_.size() * sizeof(DependencyEdge);
   total += name_to_package_id_.bucket_count() * sizeof(void *);
   total += name_to_package_id_.size() * (sizeof(std::pair<std::string, PackageId>) + sizeof(void *));
   for (const auto &name : name_to_package_id_ | std::views::keys) total += name.capacity() * sizeof(char);

@@ -12,6 +12,8 @@
 class BufferGraph;
 
 class DiskGraph {
+  friend class DependencyGraph;
+
   using VersionCountType = std::uint16_t;
   using DependencyCountType = std::uint16_t;
   using VersionListId = std::uint32_t;
@@ -19,9 +21,7 @@ class DiskGraph {
   struct PackageNode {
     StringView::OffsetType name_offset;
     StringView::LengthType name_length;
-    VersionCountType version_count;
-    VersionId version_id_begin;
-    VersionListId next_version_list_id;
+    VersionListId version_list_id;
   };
 
   struct VersionNode {
@@ -64,7 +64,7 @@ public:
 
   std::optional<PackageView> get_package(std::string_view name) const;
 
-  void ingest(BufferGraph &graphbuf);
+  void ingest(BufferGraph &bgraph);
 
 private:
   constexpr static VersionListId kVersionListEndId = static_cast<VersionListId>(-1);

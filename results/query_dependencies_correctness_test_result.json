@@ -1,0 +1,10 @@
+{
+  "title": "Query Dependencies Correctness Test",
+  "time": "2026-01-21T13:44:34.043Z",
+  "trials": 200,
+  "max_depth": 10,
+  "total_test_count": 2000,
+  "passed_test_count": 2000,
+  "failed_test_count": 0,
+  "failed_tests": []
+}

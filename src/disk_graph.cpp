@@ -18,9 +18,7 @@ PackageView DiskGraph::get_package(PackageId pid) const {
   pview.versions = [this, pid] {
     std::vector<VersionView> vviews;
     const auto &pnode = package_nodes_[pid];
-    for (auto vid = pnode.version_id_begin; vid < pnode.version_id_begin + pnode.version_count; vid++)
-      vviews.emplace_back(get_version(vid));
-    for (auto vlid = pnode.next_version_list_id; vlid != kVersionListEndId;) {
+    for (auto vlid = pnode.version_list_id; vlid != kVersionListEndId;) {
       const auto &vlnode = version_lists_[vlid];
       for (auto vid = vlnode.version_id_begin; vid < vlnode.version_id_begin + vlnode.version_count; vid++)
         vviews.emplace_back(get_version(vid));
@@ -61,16 +59,15 @@ DependencyView DiskGraph::get_dependency(DependencyId did) const {
 }
 
 std::pair<PackageId, bool> DiskGraph::create_package_(std::string_view name) {
-  if (auto it = name_to_package_id_.find(name); it != name_to_package_id_.end()) return {it->second, false};
-  PackageId pid = package_nodes_.size();
+  auto it = name_to_package_id_.find(name);
+  if (it != name_to_package_id_.end()) return {it->second, false};
+  PackageId pid = package_count();
   auto &pnode = package_nodes_.emplace_back();
   auto nstr = string_pool_.add(name);
   name_to_package_id_.emplace(nstr, pid);
   pnode.name_offset = nstr.offset;
   pnode.name_length = nstr.length;
-  pnode.version_count = 0;
-  pnode.version_id_begin = 0;
-  pnode.next_version_list_id = kVersionListEndId;
+  pnode.version_list_id = kVersionListEndId;
   return {pid, true};
 }
 
@@ -78,12 +75,7 @@ std::pair<PackageId, bool> DiskGraph::create_package_(std::string_view name) {
 std::pair<VersionId, bool> DiskGraph::create_version_(PackageId pid, std::string_view version,
   ArchitectureType arch, DependencyId did_begin, DependencyCountType dcount) {
   const auto &pnode = package_nodes_[pid];
-  for (auto vid = pnode.version_id_begin; vid < pnode.version_id_begin + pnode.version_count; vid++) {
-    const auto &vnode = version_nodes_[vid];
-    auto vstr = string_pool_.get({vnode.version_offset, vnode.version_length});
-    if (vstr == version && vnode.architecture == arch) return {vid, false};
-  }
-  for (auto vlid = pnode.next_version_list_id; vlid != kVersionListEndId;) {
+  for (auto vlid = pnode.version_list_id; vlid != kVersionListEndId;) {
     const auto &vlnode = version_lists_[vlid];
     for (auto vid = vlnode.version_id_begin; vid < vlnode.version_id_begin + vlnode.version_count; vid++) {
       const auto &vnode = version_nodes_[vid];
@@ -92,7 +84,7 @@ std::pair<VersionId, bool> DiskGraph::create_version_(PackageId pid, std::string
     }
     vlid = vlnode.next_version_list_id;
   }
-  VersionId vid = version_nodes_.size();
+  VersionId vid = version_count();
   auto &vnode = version_nodes_.emplace_back();
   auto vstr = string_pool_.add(version);
   vnode.version_offset = vstr.offset;
@@ -105,7 +97,7 @@ std::pair<VersionId, bool> DiskGraph::create_version_(PackageId pid, std::string
 
 std::pair<DependencyId, bool> DiskGraph::create_dependency_(VersionId from_vid, PackageId to_pid,
   std::string_view version_constr, ArchitectureType arch_constr, DependencyType dep_type, GroupId group) {
-  DependencyId did = dependency_edges_.size();
+  DependencyId did = dependency_count();
   auto &dedge = dependency_edges_.emplace_back();
   auto vcons_sv = string_pool_.add(version_constr);
   dedge.from_version_id = from_vid;
@@ -121,17 +113,12 @@ std::pair<DependencyId, bool> DiskGraph::create_dependency_(VersionId from_vid, 
 void DiskGraph::attach_versions_(PackageId pid, VersionId vid_begin, VersionCountType vcount) {
   if (vcount == 0) return;
   auto &pnode = package_nodes_[pid];
-  if (pnode.version_count == 0) {
-    pnode.version_count = vcount;
-    pnode.version_id_begin = vid_begin;
-    return;
-  }
   VersionListId vlid = version_lists_.size();
   auto &vlnode = version_lists_.emplace_back();
   vlnode.version_count = vcount;
   vlnode.version_id_begin = vid_begin;
-  vlnode.next_version_list_id = pnode.next_version_list_id;
-  pnode.next_version_list_id = vlid;
+  vlnode.next_version_list_id = pnode.version_list_id;
+  pnode.version_list_id = vlid;
 }
 
 std::optional<PackageView> DiskGraph::get_package(std::string_view name) const {
@@ -140,26 +127,26 @@ std::optional<PackageView> DiskGraph::get_package(std::string_view name) const {
   return {get_package(it->second)};
 }
 
-void DiskGraph::ingest(BufferGraph &graphbuf) {
-  for (const auto &mpnode : graphbuf.package_nodes_) {
-    VersionCountType vcount = 0;
+void DiskGraph::ingest(BufferGraph &bgraph) {
+  for (const auto &bpnode : bgraph.package_nodes_) {
     VersionId vid_begin = version_count();
-    auto [pid, psucc] = create_package_(mpnode.name);
+    VersionCountType vcount = 0;
+    auto [pid, psucc] = create_package_(bpnode.name);
 
-    for (auto mvid : mpnode.version_ids) {
-      const auto &mvnode = graphbuf.version_nodes_[mvid];
-      DependencyCountType dcount = mvnode.dependency_ids.size();
+    for (auto bvid : bpnode.version_ids) {
+      const auto &bvnode = bgraph.version_nodes_[bvid];
       DependencyId did_begin = dependency_count();
-      auto [vid, vsucc] = create_version_(pid, mvnode.version, mvnode.architecture, did_begin, dcount);
+      DependencyCountType dcount = bvnode.dependency_ids.size();
+      auto [vid, vsucc] = create_version_(pid, bvnode.version, bvnode.architecture, did_begin, dcount);
       if (!vsucc) continue;
       vcount++;
 
-      for (auto mdid : mvnode.dependency_ids) {
-        const auto &mdedge = graphbuf.dependency_edges_[mdid];
-        const auto &mdpnode = graphbuf.package_nodes_[mdedge.to_package_id];
-        auto [tpid, tpsucc] = create_package_(mdpnode.name);
+      for (auto bdid : bvnode.dependency_ids) {
+        const auto &bdedge = bgraph.dependency_edges_[bdid];
+        const auto &btpnode = bgraph.package_nodes_[bdedge.to_package_id];
+        auto [tpid, tpsucc] = create_package_(btpnode.name);
         create_dependency_(
-          vid, tpid, mdedge.version_constraint, mdedge.architecture_constraint, mdedge.dependency_type, mdedge.group);
+          vid, tpid, bdedge.version_constraint, bdedge.architecture_constraint, bdedge.dependency_type, bdedge.group);
       }
     }
     if (vcount > 0) attach_versions_(pid, vid_begin, vcount);

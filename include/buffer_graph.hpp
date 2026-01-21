@@ -46,7 +46,7 @@ public:
 
   void clear();
 
-  std::size_t memory_usage() const noexcept;
+  std::size_t estimated_memory_usage() const noexcept;
 
 private:
   std::vector<PackageNode> package_nodes_;

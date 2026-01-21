@@ -100,11 +100,29 @@ bool PackageLoader::load_from_file(const std::string &filename, bool verbose) co
     auto end = std::chrono::high_resolution_clock::now();
     auto time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::cout << std::format("Done. ({} ms)\n", time.count());
+    pcount = graph_.buffer_package_count() - pcount;
+    vcount = graph_.buffer_version_count() - vcount;
+    dcount = graph_.buffer_dependency_count() - dcount;
+  }
+
+  auto memory_usage = graph_.estimated_memory_usage();
+  if (memory_usage >= graph_.memory_threshold()) {
+    if (verbose) {
+      start = std::chrono::high_resolution_clock::now();
+      std::cout << std::format("Estimated memory usage {:.1f} MB exceeded threshold {} MB. Flushing to disk... ",
+        memory_usage / 1024 / 1024.0, graph_.memory_threshold() / 1024 / 1024);
+    }
+    graph_.flush_to_disk();
+    if (verbose) {
+      auto end = std::chrono::high_resolution_clock::now();
+      auto time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << std::format("Done. ({} ms)\n", time.count());
+    }
+  }
+  if (verbose) {
     std::cout << std::format(
       "Loaded {} packages, {} versions, {} dependencies. Total {} packages, {} versions, {} dependencies.\n",
-      graph_.buffer_package_count() - pcount,
-      graph_.buffer_version_count() - vcount,
-      graph_.buffer_dependency_count() - dcount,
+      pcount, vcount, dcount,
       graph_.package_count() + graph_.buffer_package_count(),
       graph_.version_count() + graph_.buffer_version_count(),
       graph_.dependency_count() + graph_.buffer_dependency_count()
