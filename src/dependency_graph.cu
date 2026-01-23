@@ -1,6 +1,7 @@
 #include "dependency_graph.hpp"
 #include <cuda_runtime.h>
 #include <exception>
+#include <iostream>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -8,12 +9,13 @@
 #include <utility>
 #include <vector>
 
-DependencyGraph::DependencyGraph(std::string_view path, std::size_t memory_thresh, std::size_t chunk_bytes)
-  : architectures_{"native", "any", "all"}, dependency_types_
-    {"Depends", "Pre-Depends", "Recommends", "Suggests", "Breaks", "Conflicts", "Provides", "Replaces", "Enhances"},
-    string_pool_{std::string{path} + "/string_pool.dat", chunk_bytes},
-    disk_graph_{architectures_, dependency_types_, string_pool_, path, chunk_bytes},
-    memory_threshold_{memory_thresh} {}
+DependencyGraph::DependencyGraph(const std::filesystem::path &directory_path, OpenMode mode, std::size_t memory_limit,
+  std::size_t chunk_bytes)
+  : disk_graph_{
+      directory_path, mode, {"native", "any", "all"},
+      {"Depends", "Pre-Depends", "Recommends", "Suggests", "Breaks", "Conflicts", "Provides", "Replaces", "Enhances"},
+      chunk_bytes
+    }, memory_limit_{memory_limit} {}
 
 std::pair<PackageId, bool> DependencyGraph::create_package(std::string_view name) {
   return buf_graph_.create_package(name);
@@ -31,11 +33,12 @@ std::pair<DependencyId, bool> DependencyGraph::create_dependency(VersionId from_
 
 void DependencyGraph::flush_to_disk() {
   disk_graph_.ingest(buf_graph_);
+  disk_graph_.sync();
   buf_graph_.clear();
 }
 
 bool DependencyGraph::flush_to_disk_if_needed() {
-  bool needed = estimated_memory_usage() >= memory_threshold_;
+  bool needed = estimated_memory_usage() >= memory_limit_;
   if (needed) flush_to_disk();
   return needed;
 }
@@ -54,9 +57,9 @@ DependencyResult DependencyGraph::query_dependencies(std::string_view name, std:
       const auto &vlist = disk_graph_.version_lists_[vlid];
       for (auto vid = vlist.version_id_begin; vid < vlist.version_id_begin + vlist.version_count; vid++) {
         const auto &vnode = disk_graph_.version_nodes_[vid];
-        auto vstr = string_pool_.get({vnode.version_offset, vnode.version_length});
+        auto vstr = string_pool().get({vnode.version_offset, vnode.version_length});
         if (!version.empty() && vstr != version) continue;
-        if (!arch.empty() && architectures_.get(vnode.architecture) != arch) continue;
+        if (!arch.empty() && architectures().get(vnode.architecture) != arch) continue;
         frontier.emplace_back(vid);
       }
       vlid = vlist.next_version_list_id;
@@ -74,7 +77,7 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
     for (auto vid : buf_graph_.package_nodes_[it->second].version_ids) {
       const auto &vnode = buf_graph_.version_nodes_[vid];
       if (!version.empty() && vnode.version != version) continue;
-      if (!arch.empty() && architectures_.get(vnode.architecture) != arch) continue;
+      if (!arch.empty() && architectures().get(vnode.architecture) != arch) continue;
       frontier.emplace_back(vid);
     }
   }
@@ -95,9 +98,9 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
         DependencyItem item;
         const auto &tpnode = buf_graph_.package_nodes_[dedge.to_package_id];
         item.package_name = buf_graph_.package_nodes_[dedge.to_package_id].name;
-        item.dependency_type = dependency_types_.get(dedge.dependency_type);
+        item.dependency_type = dependency_types().get(dedge.dependency_type);
         item.version_constraint = dedge.version_constraint;
-        item.architecture_constraint = architectures_.get(dedge.architecture_constraint);
+        item.architecture_constraint = architectures().get(dedge.architecture_constraint);
 
         if (dedge.group > 0) {
           if (curr_grps.size() < dedge.group) {
@@ -109,15 +112,15 @@ DependencyResult DependencyGraph::query_dependencies_on_buffer(std::string_view 
         } else if (visited_direct_items.emplace(item).second)
           result[level].direct_dependencies.emplace_back(std::move(item));
 
-        if (level + 1 < depth && dependency_types_.get(dedge.dependency_type) == "Depends" && dedge.group == 0)
+        if (level + 1 < depth && dependency_types().get(dedge.dependency_type) == "Depends" && dedge.group == 0)
           for (auto next_vid : tpnode.version_ids) {
             if (visited_vids.contains(next_vid)) continue;
             const auto &next_vnode = buf_graph_.version_nodes_[next_vid];
             bool match = false;
-            if (architectures_.get(dedge.architecture_constraint) == "native")
+            if (architectures().get(dedge.architecture_constraint) == "native")
               match = next_vnode.architecture == vnode.architecture
-                || architectures_.get(next_vnode.architecture) == "all";
-            else if (architectures_.get(dedge.architecture_constraint) == "any") match = true;
+                || architectures().get(next_vnode.architecture) == "all";
+            else if (architectures().get(dedge.architecture_constraint) == "any") match = true;
             else match = next_vnode.architecture == dedge.architecture_constraint;
             if (match) {
               next.emplace_back(next_vid);
@@ -153,10 +156,12 @@ DependencyResult DependencyGraph::query_dependencies_on_disk_(std::vector<Versio
         const auto &dedge = disk_graph_.dependency_edges_[did];
         DependencyItem item;
         const auto &tpnode = disk_graph_.package_nodes_[dedge.to_package_id];
-        item.package_name = string_pool_.get({tpnode.name_offset, tpnode.name_length});
-        item.dependency_type = dependency_types_.get(dedge.dependency_type);
-        item.version_constraint = string_pool_.get({dedge.version_constraint_offset, dedge.version_constraint_length});
-        item.architecture_constraint = architectures_.get(dedge.architecture_constraint);
+        item.package_name = string_pool().get({tpnode.name_offset, tpnode.name_length});
+        item.dependency_type = dependency_types().get(dedge.dependency_type);
+        item.version_constraint = string_pool().get({
+          dedge.version_constraint_offset, dedge.version_constraint_length
+        });
+        item.architecture_constraint = architectures().get(dedge.architecture_constraint);
 
         if (dedge.group > 0) {
           if (curr_grps.size() < dedge.group) {
@@ -168,7 +173,7 @@ DependencyResult DependencyGraph::query_dependencies_on_disk_(std::vector<Versio
         } else if (visited_direct_items.emplace(item).second)
           result[level].direct_dependencies.emplace_back(std::move(item));
 
-        if (level + 1 < depth && dependency_types_.get(dedge.dependency_type) == "Depends" && dedge.group == 0)
+        if (level + 1 < depth && dependency_types().get(dedge.dependency_type) == "Depends" && dedge.group == 0)
           for (auto vlid = tpnode.version_list_id; vlid != DiskGraph::kVersionListEndId;) {
             const auto &vlist = disk_graph_.version_lists_[vlid];
             for (auto next_vid = vlist.version_id_begin; next_vid < vlist.version_id_begin + vlist.version_count;
@@ -176,10 +181,10 @@ DependencyResult DependencyGraph::query_dependencies_on_disk_(std::vector<Versio
               if (visited_vids.contains(next_vid)) continue;
               const auto &next_vnode = disk_graph_.version_nodes_[next_vid];
               bool match = false;
-              if (architectures_.get(dedge.architecture_constraint) == "native")
+              if (architectures().get(dedge.architecture_constraint) == "native")
                 match = next_vnode.architecture == vnode.architecture
-                  || architectures_.get(next_vnode.architecture) == "all";
-              else if (architectures_.get(dedge.architecture_constraint) == "any") match = true;
+                  || architectures().get(next_vnode.architecture) == "all";
+              else if (architectures().get(dedge.architecture_constraint) == "any") match = true;
               else match = next_vnode.architecture == dedge.architecture_constraint;
               if (match) {
                 next.emplace_back(next_vid);
@@ -270,10 +275,12 @@ DependencyResult DependencyGraph::query_dependencies_on_gpu_(std::vector<Version
       const auto &dedge = disk_graph_.dependency_edges_[did];
       DependencyItem item;
       const auto &tpnode = disk_graph_.package_nodes_[dedge.to_package_id];
-      item.package_name = string_pool_.get({tpnode.name_offset, tpnode.name_length});
-      item.dependency_type = dependency_types_.get(dedge.dependency_type);
-      item.version_constraint = string_pool_.get({dedge.version_constraint_offset, dedge.version_constraint_length});
-      item.architecture_constraint = architectures_.get(dedge.architecture_constraint);
+      item.package_name = string_pool().get({tpnode.name_offset, tpnode.name_length});
+      item.dependency_type = dependency_types().get(dedge.dependency_type);
+      item.version_constraint = disk_graph_.string_pool_.get({
+        dedge.version_constraint_offset, dedge.version_constraint_length
+      });
+      item.architecture_constraint = architectures().get(dedge.architecture_constraint);
 
       if (dedge.group != 0) {
         auto vid = dedge.from_version_id;

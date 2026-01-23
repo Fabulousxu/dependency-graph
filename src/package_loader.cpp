@@ -63,14 +63,14 @@ void PackageLoader::load_raw_packages_(std::string_view raw_pkgs) const {
     auto [vid, vsucc] = graph_.create_version(pid, kv.at("Version"), arch);
     GroupId group = 1;
 
-    for (const auto &dtype : graph_.dependency_types().symbols())
-      if (auto it = kv.find(dtype); it != kv.end()) {
-        auto dtid = graph_.dependency_types().id(dtype).value();
+    for (DependencyType dtid = 0; dtid < graph_.dependency_types().size(); ++dtid) {
+      auto dtype = graph_.dependency_types().get(dtid);
+      if (auto it = kv.find(dtype); it != kv.end())
         for (auto item : parse_dependencies_(it->second, group)) {
           auto [dpid, dpsucc] = graph_.create_package(item.package_name);
           graph_.create_dependency(vid, dpid, item.version_constraint, item.architecture_constraint, dtid, item.group);
         }
-      }
+    }
   }
 }
 
@@ -106,11 +106,11 @@ bool PackageLoader::load_from_file(const std::string &filename, bool verbose) co
   }
 
   auto memory_usage = graph_.estimated_memory_usage();
-  if (memory_usage >= graph_.memory_threshold()) {
+  if (memory_usage >= graph_.memory_limit()) {
     if (verbose) {
       start = std::chrono::high_resolution_clock::now();
       std::cout << std::format("Estimated memory usage {:.1f} MB exceeded threshold {} MB. Flushing to disk... ",
-        memory_usage / 1024 / 1024.0, graph_.memory_threshold() / 1024 / 1024);
+        memory_usage / 1024 / 1024.0, graph_.memory_limit() / 1024 / 1024);
     }
     graph_.flush_to_disk();
     if (verbose) {

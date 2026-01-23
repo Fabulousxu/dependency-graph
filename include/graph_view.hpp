@@ -2,6 +2,7 @@
 #include <functional>
 #include <string_view>
 #include <vector>
+#include "config.hpp"
 
 struct PackageView;
 struct VersionView;
@@ -27,5 +28,5 @@ struct DependencyView {
   std::string_view dependency_type;
   std::string_view version_constraint;
   std::string_view architecture_constraint;
-  std::size_t group;
+  GroupId group;
 };

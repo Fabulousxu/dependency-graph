@@ -52,8 +52,8 @@ int main(int argc, char *argv[]) {
   std::string data_dir = "./tempdata";
   std::filesystem::create_directories(data_dir);
   auto baseline_graph =
-    std::make_unique<DependencyGraph>(data_dir + "/baseline", std::numeric_limits<std::size_t>::max());
-  auto test_graph = std::make_unique<DependencyGraph>(data_dir + "/test", opt.memory_limit * 1024 * 1024);
+    std::make_unique<DependencyGraph>(data_dir + "/baseline", kCreate, std::numeric_limits<std::size_t>::max());
+  auto test_graph = std::make_unique<DependencyGraph>(data_dir + "/test", kCreate, opt.memory_limit * 1024 * 1024);
   PackageLoader baseline_loader{*baseline_graph};
   PackageLoader test_loader{*test_graph};
   if (!baseline_loader.load_from_dataset_file(opt.dataset_file, true)) return 1;
