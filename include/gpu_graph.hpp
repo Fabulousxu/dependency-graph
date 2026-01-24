@@ -1,16 +1,13 @@
 #pragma once
+#include <cstdint>
+#include <vector>
 #include "config.hpp"
 #include "result_model.hpp"
 
-constexpr auto kMaxDeviceVectorSize = 16 * 1024 * 1024;
-
 class GpuGraph {
-  friend class DependencyGraph;
-
+public:
   using VersionCountType = std::uint16_t;
   using DependencyCountType = std::uint16_t;
-
-public:
   using VisitedMarkType = std::uint16_t;
 
   struct PackageNode {
@@ -32,13 +29,15 @@ public:
     GroupId group;
   };
 
-  GpuGraph();
-  ~GpuGraph() { free_device(); }
+  GpuGraph() noexcept;
+  ~GpuGraph() { free(); }
 
-  void build(const DependencyGraph &graph);
-  void free_device();
+  void build(const DiskGraph &dgraph, std::size_t max_device_vector_bytes = kDefaultMaxDeviceVectorBytes);
+  void free();
 
 private:
+  friend class DependencyGraph;
+
   std::vector<VersionId> to_gpu_version_id_;
   mutable VisitedMarkType mark_;
   PackageNode *d_package_nodes_;

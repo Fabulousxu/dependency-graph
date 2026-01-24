@@ -1,5 +1,6 @@
 #pragma once
-#include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -8,9 +9,7 @@
 #include "string_map.hpp"
 
 class BufferGraph {
-  friend class DiskGraph;
-  friend class DependencyGraph;
-
+public:
   struct PackageNode {
     std::string name;
     std::vector<VersionId> version_ids;
@@ -31,26 +30,31 @@ class BufferGraph {
     GroupId group;
   };
 
-public:
-  BufferGraph() = default;
-  ~BufferGraph() = default;
+  BufferGraph() noexcept = default;
+  ~BufferGraph() noexcept = default;
+
+  std::size_t estimated_memory_usage() const noexcept;
 
   std::size_t package_count() const noexcept { return package_nodes_.size(); }
   std::size_t version_count() const noexcept { return version_nodes_.size(); }
   std::size_t dependency_count() const noexcept { return dependency_edges_.size(); }
 
+  const PackageNode &get_package(PackageId pid) const noexcept { return package_nodes_[pid]; }
+  const VersionNode &get_version(VersionId vid) const noexcept { return version_nodes_[vid]; }
+  const DependencyEdge &get_dependency(DependencyId did) const noexcept { return dependency_edges_[did]; }
+
+  std::optional<std::reference_wrapper<const PackageNode>> get_package(std::string_view name) const noexcept;
+
   std::pair<PackageId, bool> create_package(std::string_view name);
   std::pair<VersionId, bool> create_version(PackageId pid, std::string_view version, ArchitectureType arch);
-  std::pair<DependencyId, bool> create_dependency(VersionId from_vid, PackageId to_pid, std::string_view version_constr,
-    ArchitectureType arch_constr, DependencyType dep_type, GroupId group);
+  std::pair<DependencyId, bool> create_dependency(VersionId from_vid, PackageId to_pid, std::string_view vcons,
+                                                  ArchitectureType acons, DependencyType dtype, GroupId gid);
 
   void clear();
-
-  std::size_t estimated_memory_usage() const noexcept;
 
 private:
   std::vector<PackageNode> package_nodes_;
   std::vector<VersionNode> version_nodes_;
   std::vector<DependencyEdge> dependency_edges_;
-  StringMap<PackageId> name_to_package_id_;
+  string_map<PackageId> name_to_package_id_;
 };

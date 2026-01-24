@@ -3,16 +3,17 @@
 #include <nlohmann/json.hpp>
 #include "dependency_graph.hpp"
 #include "package_loader.hpp"
+#include "util.hpp"
 
 int main() {
-  DependencyGraph graph{"../data"};
-  PackageLoader loader{graph};
+  DependencyGraph graph("../data", kLoadOrCreate);
+  PackageLoader loader(graph);
   std::string dataset_filename;
   std::cout << "> Enter dataset filename: ";
   std::cin >> dataset_filename;
-  if (!loader.load_from_dataset_file(dataset_filename, true)) return 1;
-  graph.flush_to_disk();
-  graph.sync_to_gpu();
+  if (!loader.load_dataset_file(dataset_filename, true)) return 1;
+  graph.flush_buffer();
+  graph.sync_gpu();
   while (true) {
     std::cout << "> Query dependencies for package" << std::endl;
     std::string name, ver, arch, use_gpu;

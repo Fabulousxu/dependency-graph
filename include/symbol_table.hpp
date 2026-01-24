@@ -1,5 +1,6 @@
 #pragma once
 #include <concepts>
+#include <filesystem>
 #include <initializer_list>
 #include <optional>
 #include <string>
@@ -10,106 +11,107 @@
 #include "string_map.hpp"
 #include "string_pool.hpp"
 
-template <class Id, class Char, class Traits = std::char_traits<Char>>
-class BasicSymbolTable {
+template <class Char, class Traits = std::char_traits<Char>>
+class basic_symbol_table_iterator {
 public:
+  using char_type = Char;
+  using traits_type = Traits;
+  using value_type = std::basic_string_view<char_type, traits_type>;
+  using pointer = void;
+  using reference = value_type;
+  using difference_type = std::ptrdiff_t;
+  using iterator_category = std::bidirectional_iterator_tag;
+  using pool_type = basic_string_pool<char_type, true, traits_type>;
+  using handle_iterator = std::vector<string_handle>::iterator;
+
+  basic_symbol_table_iterator(handle_iterator iterator, const pool_type &symbols) noexcept;
+
+  value_type operator*() const noexcept { return symbols_.get(*iterator_); }
+
+  basic_symbol_table_iterator &operator++() noexcept;
+  basic_symbol_table_iterator operator++(int) noexcept;
+  basic_symbol_table_iterator &operator--() noexcept;
+  basic_symbol_table_iterator operator--(int) noexcept;
+
+  bool operator==(const basic_symbol_table_iterator &other) const noexcept { return iterator_ == other.iterator_; }
+  bool operator!=(const basic_symbol_table_iterator &other) const noexcept { return iterator_ != other.iterator_; }
+
+  value_type view() const noexcept { return **this; }
+
+private:
+  handle_iterator iterator_;
+  const pool_type &symbols_;
+};
+
+template <class Id, class Char, class Traits = std::char_traits<Char>>
+class basic_symbol_table {
   static_assert(std::integral<Id> || std::is_enum_v<Id>);
+
+public:
   using id_type = Id;
   using char_type = Char;
   using traits_type = Traits;
+  using iterator = basic_symbol_table_iterator<char_type, traits_type>;
+  using const_iterator = iterator;
+  using reverse_iterator = std::reverse_iterator<iterator>;
+  using const_reverse_iterator = std::reverse_iterator<const_iterator>;
   using view_type = std::basic_string_view<char_type, traits_type>;
   using size_type = std::size_t;
-  using path_type = BasicStringPool<char_type, true, traits_type>::path_type;
+  using path_type = std::filesystem::path;
 
-  BasicSymbolTable(size_type chunk_bytes = kSmallChunkBytes) noexcept;
-  BasicSymbolTable(const path_type &path, OpenMode mode = kLoadOrCreate, std::initializer_list<view_type> symbols = {},
-    size_type chunk_bytes = kSmallChunkBytes) noexcept;
+  basic_symbol_table(size_type chunk_bytes = kSmallChunkBytes) noexcept;
+  basic_symbol_table(const path_type &path, open_mode mode = open_mode::kLoadOrCreate,
+                     std::initializer_list<view_type> symbols = {}, size_type chunk_bytes = kSmallChunkBytes) noexcept;
 
-  OpenCode open(const path_type &path, OpenMode mode = kLoadOrCreate,
-    std::initializer_list<view_type> symbols = {}) noexcept;
+  open_code open(const path_type &path, open_mode mode = open_mode::kLoadOrCreate,
+                 std::initializer_list<view_type> symbols = {}) noexcept;
   void close();
-  void sync() noexcept { symbols_.sync(); }
+  void sync() { symbols_.sync(); }
+
   bool is_open() const noexcept { return symbols_.is_open(); }
   operator bool() const noexcept { return is_open(); }
 
-  size_type size() const noexcept { return id_to_symbols_.size(); }
-  size_type symbol_count() const noexcept { return size(); }
   size_type chunk_bytes() const noexcept { return symbols_.chunk_bytes(); }
   void set_chunk_bytes(size_type chunk_bytes) noexcept { symbols_.set_chunk_bytes(chunk_bytes); }
 
-  view_type get(id_type id) const noexcept;
+  size_type size() const noexcept { return id_to_symbol_.size(); }
+  size_type symbol_count() const noexcept { return size(); }
+
+  iterator begin() noexcept { return iterator(id_to_symbol_.begin(), symbols_); }
+  const_iterator begin() const noexcept { return const_iterator(id_to_symbol_.begin(), symbols_); }
+  const_iterator cbegin() const noexcept { return const_iterator(id_to_symbol_.begin(), symbols_); }
+
+  iterator end() noexcept { return iterator(id_to_symbol_.end(), symbols_); }
+  const_iterator end() const noexcept { return const_iterator(id_to_symbol_.end(), symbols_); }
+  const_iterator cend() const noexcept { return const_iterator(id_to_symbol_.end(), symbols_); }
+
+  reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+  const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+  const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+
+  reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+  const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+  const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
+
+  view_type get(id_type id) const noexcept { return symbols_.get(id_to_symbol_[id]); }
+  view_type at(id_type id) const noexcept { return get(id); }
+
   std::optional<id_type> id(view_type symbol) const noexcept;
+  std::optional<id_type> index(view_type symbol) const noexcept { return id(symbol); }
+
   view_type operator[](id_type id) const noexcept { return get(id); }
   std::optional<id_type> operator[](view_type symbol) const noexcept { return id(symbol); }
-  id_type add(view_type symbol) noexcept;
+
+  id_type add(view_type symbol);
+  id_type append(view_type symbol) { return add(symbol); }
 
 private:
-  BasicStringPool<Char, true, Traits> symbols_;
-  std::vector<StringHandle> id_to_symbols_;
-  BasicStringHandleMap<char_type, id_type, true, traits_type> symbol_to_id_;
+  basic_string_pool<char_type, true, traits_type> symbols_;
+  std::vector<string_handle> id_to_symbol_;
+  basic_string_handle_map<id_type, char_type, true, traits_type> symbol_to_id_;
 };
 
 template <class Id>
-using SymbolTable = BasicSymbolTable<Id, char>;
+using symbol_table = basic_symbol_table<Id, char>;
 
-
-template <class Id, class Char, class Traits>
-BasicSymbolTable<Id, Char, Traits>::BasicSymbolTable(size_type chunk_bytes) noexcept
-  : symbols_{chunk_bytes}, symbol_to_id_{
-      0, BasicStringHandleHash<char_type, true, traits_type>{symbols_},
-      BasicStringHandleEqual<char_type, true, traits_type>{symbols_}
-    } {}
-
-template <class Id, class Char, class Traits>
-BasicSymbolTable<Id, Char, Traits>::BasicSymbolTable(const path_type &path, OpenMode mode,
-  std::initializer_list<view_type> symbols, size_type chunk_bytes) noexcept
-  : symbols_{chunk_bytes}, symbol_to_id_{0, {symbols_}, {symbols_}} {
-  open(path, mode, symbols, chunk_bytes);
-}
-
-template <class Id, class Char, class Traits>
-OpenCode BasicSymbolTable<Id, Char, Traits>::open(const path_type &path, OpenMode mode,
-  std::initializer_list<view_type> symbols) noexcept {
-  if (is_open()) close();
-  auto oc = symbols_.open(path, mode);
-  if (oc == kCreateSuccess) for (auto symbol : symbols) add(symbol);
-  if (oc == kLoadSuccess)
-    for (auto it = symbols_.begin(); it != symbols_.end(); ++it) {
-      auto handle = it.handle();
-      id_type id = id_to_symbols_.size();
-      id_to_symbols_.emplace_back(handle);
-      symbol_to_id_.emplace(handle, id);
-    }
-  return oc;
-}
-
-template <class Id, class Char, class Traits>
-void BasicSymbolTable<Id, Char, Traits>::close() {
-  symbols_.close();
-  id_to_symbols_.clear();
-  symbol_to_id_.clear();
-}
-
-template <class Id, class Char, class Traits>
-auto BasicSymbolTable<Id, Char, Traits>::get(id_type id) const noexcept -> view_type {
-  auto handle = id_to_symbols_[static_cast<std::size_t>(id)];
-  return symbols_.get(handle);
-}
-
-template <class Id, class Char, class Traits>
-auto BasicSymbolTable<Id, Char, Traits>::id(view_type symbol) const noexcept -> std::optional<Id> {
-  auto it = symbol_to_id_.find(symbol);
-  if (it != symbol_to_id_.end()) return it->second;
-  return std::nullopt;
-}
-
-template <class Id, class Char, class Traits>
-auto BasicSymbolTable<Id, Char, Traits>::add(view_type symbol) noexcept -> id_type {
-  auto it = symbol_to_id_.find(symbol);
-  if (it != symbol_to_id_.end()) return it->second;
-  id_type id = id_to_symbols_.size();
-  auto handle = symbols_.add(symbol);
-  id_to_symbols_.emplace_back(handle);
-  symbol_to_id_.emplace(handle, id);
-  return id;
-}
+#include "details/symbol_table.ipp"
