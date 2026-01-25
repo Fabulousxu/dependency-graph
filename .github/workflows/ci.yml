@@ -22,14 +22,28 @@ jobs:
         shell: powershell
         working-directory: build
         run: |
-          ./query_dependencies_correctness_test --dataset E:/MyProjects/dependency-graph/datasets/repos_388.jsonl `
-                                                --test-package-count 1000 `
-                                                --max-depth 10
+          ./query_dependencies_correctness_test `
+            --dataset E:/MyProjects/dependency-graph/datasets/repos-50.jsonl `
+            --trials 200 `
+            --max-depth 10 `
+            --output ./results/query_dependencies_correctness_test-create-result.json
+          ./query_dependencies_correctness_test `
+            --dataset E:/MyProjects/dependency-graph/datasets/repos-50.jsonl `
+            --test-load `
+            --load-dir E:/MyProjects/dependency-graph/data/repos-50 `
+            --trials 200 `
+            --max-depth 10 `
+            --output ./results/query_dependencies_correctness_test-load-result.json
 
       - name: Query Dependencies Benchmark
         shell: powershell
         working-directory: build
         run: |
-          ./query_dependencies_benchmark --dataset E:/MyProjects/dependency-graph/datasets/repos_388.jsonl `
-                                         --test-package-count 1000 `
-                                         --max-depth 10
+          ./query_dependencies_benchmark `          
+            --dataset E:/MyProjects/dependency-graph/datasets/repos-388.jsonl `
+            --test-load `
+            --load-dir E:/MyProjects/dependency-graph/data/repos-388 `
+            --trials 1000 `
+            --max-depth 10 `
+            --memory-limit 1024 `
+            --output ./results/query_dependencies_benchmark-result.json

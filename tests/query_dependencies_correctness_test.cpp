@@ -15,6 +15,8 @@
 
 struct Option {
   std::string dataset_file;
+  bool test_load;
+  std::string load_dir;
   std::size_t trials;
   std::size_t max_depth;
   std::string output_file;
@@ -24,23 +26,39 @@ int main(int argc, char *argv[]) {
   Option opt;
   CLI::App app;
   app.add_option("--dataset", opt.dataset_file)->required()->check(CLI::ExistingFile);
+  app.add_flag("--test-load", opt.test_load);
+  app.add_option("--load-dir", opt.load_dir)->needs("--test-load")->check(CLI::ExistingDirectory);
   app.add_option("--trials", opt.trials)->required()->check(CLI::PositiveNumber);
   app.add_option("--max-depth", opt.max_depth)->required()->check(CLI::PositiveNumber);
-  app.add_option("--output", opt.output_file)
-     ->default_val("../results/query_dependencies_correctness_test_result.json");
+  app.add_option("--output", opt.output_file)->required();
   CLI11_PARSE(app, argc, argv);
 
   std::filesystem::create_directories("./temp");
-  DependencyGraph baseline_graph("./temp/data/baseline", kCreate, std::numeric_limits<std::size_t>::max());
-  DependencyGraph test_graph("./temp/data/test", kCreate, 0);
-  PackageLoader baseline_loader(baseline_graph);
+  DependencyGraph in_mem_graph(std::numeric_limits<std::size_t>::max());
+  DependencyGraph test_graph(0);
+  if (!in_mem_graph.open("./temp/data/in-memory", kCreate)) {
+    println("Failed to create DependencyGraph at directory: {}", "./temp/data/in-memory");
+    return 1;
+  }
+  if (opt.test_load) {
+    if (!test_graph.open(opt.load_dir, kLoad)) {
+      println("Failed to load DependencyGraph from directory: {}", opt.load_dir);
+      return 1;
+    }
+  } else if (!test_graph.open("./temp/data/test", kCreate)) {
+    println("Failed to create DependencyGraph at directory: {}", "./temp/data/test");
+    return 1;
+  }
+
+  PackageLoader baseline_loader(in_mem_graph);
   PackageLoader test_loader(test_graph);
   if (!baseline_loader.load_dataset_file(opt.dataset_file, true)) return 1;
-  if (!test_loader.load_dataset_file(opt.dataset_file, true)) return 1;
-
-  print("Flushing to disk... ");
-  auto flush_time = measure_time<std::chrono::milliseconds>([&] { test_graph.flush_buffer(); });
-  println("Done. ({:.3f} s)", flush_time.count() / 1000.0);
+  if (!opt.test_load) {
+    if (!test_loader.load_dataset_file(opt.dataset_file, true)) return 1;
+    print("Flushing to disk... ");
+    auto flush_time = measure_time<std::chrono::milliseconds>([&] { test_graph.flush_buffer(); });
+    println("Done. ({:.3f} s)", flush_time.count() / 1000.0);
+  }
   println("Total {} packages, {} versions, {} dependencies.",
           test_graph.package_count(), test_graph.version_count(), test_graph.dependency_count());
   print("Syncing to GPU... ");
@@ -63,6 +81,7 @@ int main(int argc, char *argv[]) {
   nlohmann::ordered_json result;
   result["title"] = "Query Dependencies Correctness Test";
   result["time"] = now_iso8601();
+  result["test_load"] = opt.test_load;
   result["trials"] = opt.trials;
   result["max_depth"] = opt.max_depth;
   result["total_test_count"] = opt.trials * opt.max_depth;
@@ -73,7 +92,7 @@ int main(int argc, char *argv[]) {
   std::size_t passed_cnt = 0, tested_cnt = 0;
   for (auto depth = 1; depth <= opt.max_depth; ++depth) {
     for (const auto &name : to_query) {
-      auto baseline_result = baseline_graph.query_dependencies_on_buffer(name, "", "", depth);
+      auto baseline_result = in_mem_graph.query_dependencies_on_buffer(name, "", "", depth);
       auto disk_result = test_graph.query_dependencies(name, "", "", depth, false);
       auto gpu_result = test_graph.query_dependencies(name, "", "", depth, true);
 
@@ -176,7 +195,7 @@ int main(int argc, char *argv[]) {
   println("===========================================");
 
   println("Cleaning up...");
-  baseline_graph.close();
+  in_mem_graph.close();
   test_graph.close();
   std::filesystem::remove_all("./temp");
   std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());
