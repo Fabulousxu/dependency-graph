@@ -2,7 +2,7 @@
 
 This project implements a high-performance software package dependency graph system for storing and querying dependency relationships among large-scale software packages.
 
-The system is based on an in-memory graph representation and supports optional CUDA-based GPU acceleration, enabling efficient depth-limited dependency traversal queries.
+The system is based on a persistent, memory-mapped graph representation and supports optional CUDA-based GPU acceleration for efficient depth-limited dependency traversal queries.
 
 At its current stage, the project mainly focuses on dependency query performance and system design validation, and can be used for research, benchmarking, or as a foundational component for higher-level systems.
 
@@ -11,7 +11,8 @@ At its current stage, the project mainly focuses on dependency query performance
 ## Features
 
 - **Dependency Graph Storage**
-    - In-memory representation of packages, versions, and dependency relationships
+    - Persistent, memory-mapped representation of packages, versions, and dependency relationships
+    - Disk-backed storage design suitable for memory-constrained environments
     - Compact adjacency-style data layout optimized for dependency traversal
 
 - **Efficient Dependency Queries**
@@ -21,7 +22,7 @@ At its current stage, the project mainly focuses on dependency query performance
 
 - **GPU Acceleration**
     - Optional GPU-accelerated dependency traversal
-    - Dependency graph construction on the GPU using CUDA
+    - Explicit synchronization of the full dependency graph to GPU memory
     - Parallel dependency traversal leveraging GPU computing capabilities
 
 - **Modular Design**
@@ -47,7 +48,7 @@ These results are primarily used to:
 - Validate the effectiveness of the system design
 - Compare with other dependency graph implementations or graph processing systems
 
-> Note:
+> Note:  
 > The provided results reflect relative performance under experimental environments and are not intended to represent absolute production-level performance.
 
 ---
@@ -85,15 +86,18 @@ target_link_libraries(YOUR_TARGET_NAME PRIVATE libdepgraph)
 ### Example
 
 ```c++
-#include "DependencyGraph.h"
+#include "DependencyGraph.hpp"
+#include "PackageLoader.hpp"
+#include <nlohmann/json.hpp>
 
 int main() {
-    DependencyGraph graph;
+    DependencyGraph graph("./data", kLoadOrCreate);
     PackageLoader loader(graph);
     loader.load_from_file("Debian-bookworm-amd64-Packages");
-    loader.build_gpu_graph();
+    graph.flush_to_disk();
+    graph.sync_to_gpu();
     
-    json result = graph.query_dependencies("adduser", "3.134", "all", 3, true);
+    nlohmann::json result = graph.query_dependencies("adduser", "3.134", "all", 3, true);
     return 0;
 }
 ```
@@ -110,7 +114,8 @@ After building, you can run the `console` executable directly from the build dir
 
 ## Project Status
 
-- Current version: v1.0 (Initial Release)
-- APIs may change in future versions
-- The current release focuses on core data structures and query performance
+- Current version: v1.1 (Persistent Storage Release)
+- This release introduces persistent, memory-mapped graph storage
+- GPU acceleration is supported via full-graph synchronization
+- APIs may change in future versions as GPU memory management is further refined
 - The project is under active development and optimization

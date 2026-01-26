@@ -39,11 +39,11 @@ jobs:
         shell: powershell
         working-directory: build
         run: |
-          ./query_dependencies_benchmark `          
+          ./query_dependencies_benchmark `
             --dataset E:/MyProjects/dependency-graph/datasets/repos-388.jsonl `
             --test-load `
             --load-dir E:/MyProjects/dependency-graph/data/repos-388 `
-            --trials 1000 `
+            --trials 200 `
             --max-depth 10 `
             --memory-limit 1024 `
             --output ./results/query_dependencies_benchmark-result.json

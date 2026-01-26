@@ -72,7 +72,6 @@ int main(int argc, char *argv[]) {
       println("Failed to load DependencyGraph from directory: {}", opt.load_dir);
       return 1;
     }
-    load_graph.close();
   }
 
   PackageLoader inmem_loader(inmem_graph);
@@ -89,7 +88,9 @@ int main(int argc, char *argv[]) {
   });
   println("Done. ({:.3f} s)", flush_time.count() / 1000.0);
   println("Total {} packages, {} versions, {} dependencies.",
-          memlimit_graph.package_count(), memlimit_graph.version_count(), memlimit_graph.dependency_count());
+          inmem_graph.buffer_package_count(),
+          inmem_graph.buffer_version_count(),
+          inmem_graph.buffer_dependency_count());
   print("Syncing to GPU... ");
   auto sync_time = measure_time<std::chrono::milliseconds>([&] {
     immflush_graph.sync_gpu();
@@ -113,6 +114,9 @@ int main(int argc, char *argv[]) {
   nlohmann::ordered_json result;
   result["title"] = "Query Dependencies Benchmark";
   result["time"] = now_iso8601();
+  result["package_count"] = inmem_graph.buffer_package_count();
+  result["version_count"] = inmem_graph.buffer_version_count();
+  result["dependency_count"] = inmem_graph.buffer_dependency_count();
   result["test_load"] = opt.test_load;
   result["trials"] = opt.trials;
   result["max_depth"] = opt.max_depth;
@@ -134,7 +138,7 @@ int main(int argc, char *argv[]) {
       });
       inmem_times[depth - 1].emplace_back(time.count());
     }
-    auto &inmem_result = result["baseline_results"].emplace_back();
+    auto &inmem_result = result["in_memory_results"].emplace_back();
     inmem_result["depth"] = depth;
     println("In-memory      tests completed. Average {:.3f} ms per query.",
             analyze_times(inmem_result, inmem_times[depth - 1], opt.trials));
