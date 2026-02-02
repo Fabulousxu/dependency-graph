@@ -1,5 +1,6 @@
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <random>
 #include <string>
@@ -8,14 +9,64 @@
 #include <vector>
 #include <CLI/CLI11.hpp>
 #include <nlohmann/json.hpp>
-#include "config.hpp"
 #include "dependency_graph.hpp"
 #include "package_loader.hpp"
 #include "util.hpp"
 
+bool compare_result(const DependencyResult &baseline, const DependencyResult &test, nlohmann::ordered_json &failure,
+                    std::string_view baseline_name = "", std::string_view test_name = "") {
+  for (auto level = 0; level < baseline.size(); ++level) {
+    const auto &[bdirect, bor] = baseline[level];
+    const auto &[tdirect, tor] = test[level];
+    if (bdirect.size() != tdirect.size()) {
+      failure["failed_level"] = level;
+      failure["reason"] = std::format("Direct dependency count mismatch between {} and {}.", baseline_name, test_name);
+      failure[std::format("{}_direct_dependency_count", baseline_name)] = bdirect.size();
+      failure[std::format("{}_direct_dependency_count", test_name)] = tdirect.size();
+      return false;
+    }
+    if (bor.size() != tor.size()) {
+      failure["failed_level"] = level;
+      failure["reason"] = std::format("Or dependency group count mismatch between {} and {}.",
+                                      baseline_name, test_name);
+      failure[std::format("{}_or_dependency_group_count", baseline_name)] = bor.size();
+      failure[std::format("{}_or_dependency_group_count", test_name)] = tor.size();
+      return false;
+    }
+
+    std::unordered_set bdirect_set(bdirect.begin(), bdirect.end());
+    std::unordered_set tdirect_set(tdirect.begin(), tdirect.end());
+    if (bdirect_set != tdirect_set) {
+      failure["failed_level"] = level;
+      failure["reason"] = std::format("Direct dependencies mismatch between {} and {}.", baseline_name, test_name);
+      return false;
+    }
+
+    std::vector<std::unordered_set<DependencyInfo>> bor_set, tor_set;
+    for (auto group = 0; group < bor.size(); group++) {
+      bor_set.emplace_back(bor[group].begin(), bor[group].end());
+      tor_set.emplace_back(tor[group].begin(), tor[group].end());
+    }
+    for (const auto &bgroup_set : bor_set) {
+      bool correct = false;
+      for (const auto &tgroup_set : tor_set) {
+        if (bgroup_set == tgroup_set) {
+          correct = true;
+          break;
+        }
+      }
+      if (!correct) {
+        failure["failed_level"] = level;
+        failure["reason"] = std::format("Or dependency groups mismatch between {} and {}.", baseline_name, test_name);
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 struct Option {
   std::string dataset_file;
-  bool test_load;
   std::string load_dir;
   std::size_t trials;
   std::size_t max_depth;
@@ -26,46 +77,41 @@ int main(int argc, char *argv[]) {
   Option opt;
   CLI::App app;
   app.add_option("--dataset", opt.dataset_file)->required()->check(CLI::ExistingFile);
-  app.add_flag("--test-load", opt.test_load);
-  app.add_option("--load-dir", opt.load_dir)->needs("--test-load")->check(CLI::ExistingDirectory);
+  app.add_option("--load-dir", opt.load_dir)->check(CLI::ExistingDirectory);
   app.add_option("--trials", opt.trials)->required()->check(CLI::PositiveNumber);
   app.add_option("--max-depth", opt.max_depth)->required()->check(CLI::PositiveNumber);
   app.add_option("--output", opt.output_file)->required();
   CLI11_PARSE(app, argc, argv);
 
   std::filesystem::create_directories("./temp");
-  DependencyGraph in_mem_graph(std::numeric_limits<std::size_t>::max());
+  DependencyGraph inmem_graph(std::numeric_limits<std::size_t>::max());
   DependencyGraph test_graph(0);
-  if (!in_mem_graph.open("./temp/data/in-memory", kCreate)) {
+  DependencyGraph load_graph;
+  if (!inmem_graph.create("./temp/data/in-memory")) {
     println("Failed to create DependencyGraph at directory: {}", "./temp/data/in-memory");
     return 1;
   }
-  if (opt.test_load) {
-    if (!test_graph.open(opt.load_dir, kLoad)) {
-      println("Failed to load DependencyGraph from directory: {}", opt.load_dir);
-      return 1;
-    }
-  } else if (!test_graph.open("./temp/data/test", kCreate)) {
+  if (!test_graph.create("./temp/data/test")) {
     println("Failed to create DependencyGraph at directory: {}", "./temp/data/test");
     return 1;
   }
-
-  PackageLoader baseline_loader(in_mem_graph);
-  PackageLoader test_loader(test_graph);
-  if (!baseline_loader.load_dataset_file(opt.dataset_file, true)) return 1;
-  if (!opt.test_load) {
-    if (!test_loader.load_dataset_file(opt.dataset_file, true)) return 1;
-    print("Flushing to disk... ");
-    auto flush_time = measure_time<std::chrono::milliseconds>([&] { test_graph.flush_buffer(); });
-    println("Done. ({:.3f} s)", flush_time.count() / 1000.0);
+  if (!opt.load_dir.empty() && !load_graph.load(opt.load_dir)) {
+    println("Failed to load DependencyGraph from directory: {}", opt.load_dir);
+    return 1;
   }
+
+  PackageLoader inmem_loader(inmem_graph);
+  PackageLoader test_loader(test_graph);
+  if (!inmem_loader.load_dataset_file(opt.dataset_file, true)) return 1;
+  if (!test_loader.load_dataset_file(opt.dataset_file, true)) return 1;
+  test_graph.flush_buffer();
   println("Total {} packages, {} versions, {} dependencies.",
           test_graph.package_count(), test_graph.version_count(), test_graph.dependency_count());
-  print("Syncing to GPU... ");
-  auto sync_time = measure_time<std::chrono::milliseconds>([&] { test_graph.sync_gpu(); });
-  println("Done. ({:.3f} s)", sync_time.count() / 1000.0);
+  print("Building cache on GPU... ");
+  auto sync_time = measure_time<std::chrono::milliseconds>([&] { test_graph.build_cache(); });
+  println("Done. ({} ms)", sync_time.count());
 
-  std::vector<std::string_view> to_query;
+  std::vector<std::string> to_query;
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_int_distribution<std::size_t> dist(0, test_graph.package_count() - 1);
@@ -81,7 +127,10 @@ int main(int argc, char *argv[]) {
   nlohmann::ordered_json result;
   result["title"] = "Query Dependencies Correctness Test";
   result["time"] = now_iso8601();
-  result["test_load"] = opt.test_load;
+  result["package_count"] = test_graph.package_count();
+  result["version_count"] = test_graph.version_count();
+  result["dependency_count"] = test_graph.dependency_count();
+  result["test_load"] = !opt.load_dir.empty();
   result["trials"] = opt.trials;
   result["max_depth"] = opt.max_depth;
   result["total_test_count"] = opt.trials * opt.max_depth;
@@ -92,96 +141,24 @@ int main(int argc, char *argv[]) {
   std::size_t passed_cnt = 0, tested_cnt = 0;
   for (auto depth = 1; depth <= opt.max_depth; ++depth) {
     for (const auto &name : to_query) {
-      auto baseline_result = in_mem_graph.query_dependencies_on_buffer(name, "", "", depth);
+      auto inmem_result = inmem_graph.query_dependencies_on_buffer(name, "", "", depth);
       auto disk_result = test_graph.query_dependencies(name, "", "", depth, false);
       auto gpu_result = test_graph.query_dependencies(name, "", "", depth, true);
 
-      for (auto level = 0; level < depth; ++level) {
-        const auto &[baseline_direct, baseline_or] = baseline_result[level];
-        const auto &[disk_direct, disk_or] = disk_result[level];
-        const auto &[gpu_direct, gpu_or] = gpu_result[level];
-
-        if (baseline_direct.size() != disk_direct.size() || baseline_direct.size() != gpu_direct.size()
-          || baseline_or.size() != disk_or.size() || baseline_or.size() != gpu_or.size()) {
-          auto &failure = result["failed_tests"].emplace_back();
-          failure["package_name"] = name;
-          failure["depth"] = depth;
-          failure["failed_level"] = level;
-          if (baseline_direct.size() != disk_direct.size()) {
-            failure["reason"] = "Direct dependency count mismatch between baseline and disk.";
-            failure["baseline_level_direct_dependency_count"] = baseline_direct.size();
-            failure["disk_level_direct_dependency_count"] = disk_direct.size();
-          } else if (baseline_direct.size() != gpu_direct.size()) {
-            failure["reason"] = "Direct dependency count mismatch between baseline and GPU.";
-            failure["baseline_level_direct_dependency_count"] = baseline_direct.size();
-            failure["gpu_level_direct_dependency_count"] = gpu_direct.size();
-          } else if (baseline_or.size() != disk_or.size()) {
-            failure["reason"] = "Or dependency group count mismatch between baseline and disk.";
-            failure["baseline_level_or_dependency_group_count"] = baseline_or.size();
-            failure["disk_level_or_dependency_group_count"] = disk_or.size();
-          } else if (baseline_or.size() != gpu_or.size()) {
-            failure["reason"] = "Or dependency group count mismatch between baseline and GPU.";
-            failure["baseline_level_or_dependency_group_count"] = baseline_or.size();
-            failure["gpu_level_or_dependency_group_count"] = gpu_or.size();
-          }
-          goto test_failed;
-        }
-
-        std::unordered_set baseline_direct_set(baseline_direct.begin(), baseline_direct.end());
-        std::unordered_set disk_direct_set(disk_direct.begin(), disk_direct.end());
-        std::unordered_set gpu_direct_set(gpu_direct.begin(), gpu_direct.end());
-        if (baseline_direct_set != disk_direct_set || baseline_direct_set.size() != disk_direct_set.size()) {
-          auto &failure = result["failed_tests"].emplace_back();
-          failure["package_name"] = name;
-          failure["depth"] = depth;
-          failure["failed_level"] = level;
-          if (baseline_direct_set != disk_direct_set)
-            failure["reason"] = "Direct dependencies mismatch between baseline and disk.";
-          else failure["reason"] = "Direct dependencies mismatch between baseline and GPU.";
-          goto test_failed;
-        }
-
-        std::vector<std::unordered_set<DependencyItem>> baseline_or_set, disk_or_set, gpu_or_set;
-        for (auto group = 0; group < baseline_or.size(); group++) {
-          const auto &baseline_group = baseline_or[group];
-          const auto &disk_group = disk_or[group];
-          const auto &gpu_group = gpu_or[group];
-          baseline_or_set.emplace_back(baseline_group.begin(), baseline_group.end());
-          disk_or_set.emplace_back(disk_group.begin(), disk_group.end());
-          gpu_or_set.emplace_back(gpu_group.begin(), gpu_group.end());
-        }
-
-        for (const auto &baseline_set : baseline_or_set) {
-          bool correct_disk = false, correct_gpu = false;
-          for (const auto &disk_set : disk_or_set)
-            if (baseline_set == disk_set) {
-              correct_disk = true;
-              break;
-            }
-          if (correct_disk)
-            for (const auto &gpu_set : gpu_or_set)
-              if (baseline_set == gpu_set) {
-                correct_gpu = true;
-                break;
-              }
-
-          if (!correct_disk || !correct_gpu) {
-            auto &failure = result["failed_tests"].emplace_back();
-            failure["package_name"] = name;
-            failure["depth"] = depth;
-            failure["failed_level"] = level;
-            if (!correct_disk) failure["reason"] = "Or dependencies mismatch between baseline and disk.";
-            else failure["reason"] = "Or dependencies mismatch between baseline and GPU.";
-            goto test_failed;
-          }
-        }
+      nlohmann::ordered_json failure;
+      failure["package_name"] = name;
+      failure["depth"] = depth;
+      bool succ = compare_result(inmem_result, disk_result, failure, "baseline", "disk");
+      if (succ) succ = compare_result(inmem_result, gpu_result, failure, "baseline", "GPU");
+      if (!opt.load_dir.empty() && succ) {
+        auto load_result = load_graph.query_dependencies(name, "", "", depth, false);
+        succ = compare_result(inmem_result, load_result, failure, "baseline", "loaded");
       }
 
-      passed_cnt++;
-      goto test_progress;
-    test_failed:
-      println("Test failed for package: {}, depth={}.", name, depth);
-    test_progress:
+      if (!succ) {
+        println("Test failed for package: {}, depth={}.", name, depth);
+        result["failed_tests"].emplace_back(failure);
+      } else ++passed_cnt;
       if (++tested_cnt % 100 == 0)
         println("Progress: {}/{} tests completed. Passed: {}, Failed: {}.",
                 tested_cnt, opt.trials * opt.max_depth, passed_cnt, tested_cnt - passed_cnt);
@@ -195,7 +172,7 @@ int main(int argc, char *argv[]) {
   println("===========================================");
 
   println("Cleaning up...");
-  in_mem_graph.close();
+  inmem_graph.close();
   test_graph.close();
   std::filesystem::remove_all("./temp");
   std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());

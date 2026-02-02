@@ -4,8 +4,57 @@
 #include <format>
 #include <functional>
 #include <iostream>
+#include <memory>
+#include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+
+constexpr std::size_t alignup(std::size_t n, std::size_t align) noexcept {
+  return (n + align - 1) / align * align;
+}
+
+template <class Char, class Traits = std::char_traits<Char>>
+struct basic_string_hash {
+  using is_transparent = void;
+  using view_type = std::basic_string_view<Char, Traits>;
+
+  std::size_t operator()(view_type key) const noexcept { return std::hash<view_type>()(key); }
+};
+
+template <class Char, class Traits = std::char_traits<Char>>
+struct basic_string_equal_to {
+  using is_transparent = void;
+  using view_type = std::basic_string_view<Char, Traits>;
+
+  bool operator()(view_type l, view_type r) const noexcept { return l == r; }
+};
+
+template <class T, class Char, class Traits = std::char_traits<Char>, class Alloc = std::allocator<Char>>
+using basic_string_map = std::unordered_map<std::basic_string<Char, Traits, Alloc>, T,
+                                            basic_string_hash<Char, Traits>, basic_string_equal_to<Char, Traits>>;
+
+template <class Char, class Traits = std::char_traits<Char>, class Alloc = std::allocator<Char>>
+using basic_string_set = std::unordered_set<std::basic_string<Char, Traits, Alloc>,
+                                            basic_string_hash<Char, Traits>, basic_string_equal_to<Char, Traits>>;
+
+template <class T>
+using string_map = basic_string_map<T, char>;
+
+template <class T>
+using wstring_map = basic_string_map<T, wchar_t>;
+
+template <class T>
+using u16string_map = basic_string_map<T, char16_t>;
+
+template <class T>
+using u32string_map = basic_string_map<T, char32_t>;
+
+using string_set = basic_string_set<char>;
+using wstring_set = basic_string_set<wchar_t>;
+using u16string_set = basic_string_set<char16_t>;
+using u32string_set = basic_string_set<char32_t>;
 
 constexpr std::string_view trim(std::string_view sv) noexcept {
   auto first = sv.find_first_not_of(" \t\n\r\f\v");

@@ -1,8 +1,8 @@
 add_library(libdepgraph
-        disk_graph.cpp
+        storage_graph.cpp
         buffer_graph.cpp
-        gpu_graph.cu
-        dependency_graph.cu
+        cache_graph.cu
+        dependency_graph.cpp
         package_loader.cpp
 )
 

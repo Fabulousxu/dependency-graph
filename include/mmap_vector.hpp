@@ -5,7 +5,7 @@
 #include "config.hpp"
 
 template <class T>
-class disk_vector {
+class mmap_vector {
 public:
   using value_type = T;
   using pointer = value_type *;
@@ -20,10 +20,20 @@ public:
   using difference_type = std::ptrdiff_t;
   using path_type = std::filesystem::path;
 
-  disk_vector(size_type chunk_bytes = kDefaultChunkBytes) noexcept : chunk_bytes_(chunk_bytes) {}
-  disk_vector(const path_type &path, open_mode mode = open_mode::kLoadOrCreate,
+  mmap_vector(size_type chunk_bytes = kDefaultChunkBytes) noexcept : chunk_bytes_(chunk_bytes) {}
+  mmap_vector(const path_type &path, open_mode mode = open_mode::kLoadOrCreate,
               size_type chunk_bytes = kDefaultChunkBytes) noexcept;
-  ~disk_vector() { close(); }
+
+  mmap_vector(const mmap_vector &) = delete;
+  mmap_vector &operator=(const mmap_vector &) = delete;
+
+  mmap_vector(mmap_vector &&) noexcept = default;
+  mmap_vector &operator=(mmap_vector &&) noexcept = default;
+
+  ~mmap_vector() { close(); }
+
+  bool load(const path_type &path) noexcept;
+  bool create(const path_type &path) noexcept;
 
   open_code open(const path_type &path, open_mode mode = open_mode::kLoadOrCreate) noexcept;
   void close();
@@ -35,11 +45,13 @@ public:
   size_type chunk_bytes() const noexcept { return chunk_bytes_; }
   void set_chunk_bytes(size_type chunk_bytes) noexcept { chunk_bytes_ = chunk_bytes; }
 
-  static size_type element_size() noexcept { return sizeof(T); }
+  static constexpr size_type element_size() noexcept { return sizeof(T); }
 
   size_type size() const noexcept { return header().size; }
   size_type length() const noexcept { return size(); }
   size_type capacity() const noexcept { return (mmap_.size() - header_size()) / element_size(); }
+
+  bool empty() const noexcept { return size() == 0; }
 
   iterator begin() noexcept { return data(); }
   const_iterator begin() const noexcept { return data(); }
@@ -82,34 +94,31 @@ public:
   template <class... Args>
   reference emplace_back(Args &&... args);
 
-  disk_vector &append(const_reference value);
-  disk_vector &append(value_type &&value);
+  mmap_vector &append(const_reference value);
+  mmap_vector &append(value_type &&value);
 
   template <class It>
-  disk_vector &append(It first, It last);
+  mmap_vector &append(It first, It last);
 
 private:
   mio::mmap_sink mmap_;
   path_type path_;
   size_type chunk_bytes_;
 
-  struct header_t {
+  struct header_type {
     size_type magic;
     size_type element_size;
     size_type size;
   };
 
-  static constexpr size_type kMagic = 0x544345564b534944; // "DISKVECT"
+  static constexpr size_type header_magic = 0x5443455650414d4d; // "MMAPVECT"
 
-  static size_type header_size() noexcept { return sizeof(header_t); }
+  static constexpr size_type header_size() noexcept { return sizeof(header_type); }
 
-  header_t &header() noexcept { return *reinterpret_cast<header_t *>(mmap_.data()); }
-  const header_t &header() const noexcept { return *reinterpret_cast<const header_t *>(mmap_.data()); }
+  header_type &header() noexcept { return *reinterpret_cast<header_type *>(mmap_.data()); }
+  const header_type &header() const noexcept { return *reinterpret_cast<const header_type *>(mmap_.data()); }
 
-  bool validate_header() const noexcept { return header().magic == kMagic && header().element_size == element_size(); }
-
-  bool load(const path_type &path) noexcept;
-  bool create(const path_type &path) noexcept;
+  bool validate_header() const noexcept;
 };
 
-#include "details/disk_vector.ipp"
+#include "details/mmap_vector.ipp"

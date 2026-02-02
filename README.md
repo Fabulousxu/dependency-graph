@@ -94,8 +94,8 @@ int main() {
     DependencyGraph graph("./data", kLoadOrCreate);
     PackageLoader loader(graph);
     loader.load_from_file("Debian-bookworm-amd64-Packages");
-    graph.flush_to_disk();
-    graph.sync_to_gpu();
+    graph.flush_buffer();
+    graph.build_cache();
     
     nlohmann::json result = graph.query_dependencies("adduser", "3.134", "all", 3, true);
     return 0;

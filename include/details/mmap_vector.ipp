@@ -6,14 +6,19 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
-#include "config.hpp"
+#include "util.hpp"
 
 template <class T>
-disk_vector<T>::disk_vector(const path_type &path, open_mode mode, size_type chunk_bytes) noexcept
-  : disk_vector(chunk_bytes) { open(path, mode); }
+mmap_vector<T>::mmap_vector(const path_type &path, open_mode mode, size_type chunk_bytes) noexcept
+  : mmap_vector(chunk_bytes) { open(path, mode); }
 
 template <class T>
-bool disk_vector<T>::load(const path_type &path) noexcept {
+bool mmap_vector<T>::validate_header() const noexcept {
+  return header().magic == header_magic && header().element_size == element_size();
+}
+
+template <class T>
+bool mmap_vector<T>::load(const path_type &path) noexcept {
   close();
   path_ = path;
   std::error_code error;
@@ -25,15 +30,13 @@ bool disk_vector<T>::load(const path_type &path) noexcept {
   if (error || file_size < header_size()) return false;
   mmap_.map(path_.string(), error);
   if (error) return false;
-  if (!validate_header()) {
-    mmap_.unmap();
-    return false;
-  }
-  return true;
+  if (validate_header()) return true;
+  mmap_.unmap();
+  return false;
 }
 
 template <class T>
-bool disk_vector<T>::create(const path_type &path) noexcept {
+bool mmap_vector<T>::create(const path_type &path) noexcept {
   close();
   path_ = path;
   std::error_code error;
@@ -43,71 +46,70 @@ bool disk_vector<T>::create(const path_type &path) noexcept {
   if (error) return false;
   mmap_.map(path_.string(), error);
   if (error) return false;
-  header().magic = kMagic;
-  header().element_size = element_size();
-  header().size = 0;
+  header() = {
+    .magic = header_magic,
+    .element_size = element_size(),
+    .size = 0
+  };
   return true;
 }
 
 template <class T>
-open_code disk_vector<T>::open(const path_type &path, open_mode mode) noexcept {
-  using enum open_mode;
-  using enum open_code;
-  if (mode == kLoad) {
-    if (load(path)) return kLoadSuccess;
-    return kOpenFailed;
+open_code mmap_vector<T>::open(const path_type &path, open_mode mode) noexcept {
+  switch (mode) {
+  case open_mode::kLoad:
+    if (load(path)) return open_code::kLoadSuccess;
+    return open_code::kOpenFailed;
+  case open_mode::kCreate:
+    if (create(path)) return open_code::kCreateSuccess;
+    return open_code::kOpenFailed;
+  case open_mode::kLoadOrCreate:
+    if (load(path)) return open_code::kLoadSuccess;
+    if (create(path)) return open_code::kCreateSuccess;
+    return open_code::kOpenFailed;
+  default:
+    return open_code::kOpenFailed;
   }
-  if (mode == kCreate) {
-    if (create(path)) return kCreateSuccess;
-    return kOpenFailed;
-  }
-  if (mode == kLoadOrCreate) {
-    if (load(path)) return kLoadSuccess;
-    if (create(path)) return kCreateSuccess;
-    return kOpenFailed;
-  }
-  return kOpenFailed;
 }
 
 template <class T>
-void disk_vector<T>::close() {
+void mmap_vector<T>::close() {
   if (!is_open()) return;
   sync();
   mmap_.unmap();
+  path_.clear();
 }
 
 template <class T>
-void disk_vector<T>::sync() {
-  if (!is_open()) return;
+void mmap_vector<T>::sync() {
   std::error_code error;
   mmap_.sync(error);
   if (error) throw std::system_error(error);
 }
 
 template <class T>
-void disk_vector<T>::reserve(size_type new_capacity) {
+void mmap_vector<T>::reserve(size_type new_capacity) {
   if (new_capacity <= capacity()) return;
   sync();
   mmap_.unmap();
   std::error_code error;
-  auto chunk_count = (header_size() + new_capacity * element_size() + chunk_bytes_ - 1) / chunk_bytes_;
-  std::filesystem::resize_file(path_, chunk_count * chunk_bytes_, error);
+  std::filesystem::resize_file(path_, alignup(header_size() + new_capacity * element_size(), chunk_bytes_), error);
   if (error) throw std::system_error(error);
   mmap_.map(path_.string(), error);
   if (error) throw std::system_error(error);
 }
 
 template <class T>
-void disk_vector<T>::resize(size_type new_size) {
+void mmap_vector<T>::resize(size_type new_size) {
   if (new_size > size()) {
     reserve(new_size);
-    for (iterator it = data() + size(); it != data() + new_size; ++it) std::construct_at(it);
-  } else for (iterator it = data() + new_size; it != data() + size(); ++it) std::destroy_at(it);
+    for (auto it = data() + size(); it != data() + new_size; ++it) std::construct_at(it);
+  } else for (auto it = data() + new_size; it != data() + size(); ++it) std::destroy_at(it);
   header().size = new_size;
 }
 
 template <class T>
-auto disk_vector<T>::push_back(const_reference value) -> reference {
+auto mmap_vector<T>::push_back(const_reference value) -> reference {
   reserve(size() + 1);
   std::construct_at(data() + size(), value);
   ++header().size;
@@ -115,7 +117,7 @@ auto disk_vector<T>::push_back(const_reference value) -> reference {
 }
 
 template <class T>
-auto disk_vector<T>::push_back(value_type &&value) -> reference {
+auto mmap_vector<T>::push_back(value_type &&value) -> reference {
   reserve(size() + 1);
   std::construct_at(data() + size(), std::move(value));
   ++header().size;
@@ -124,7 +126,7 @@ auto disk_vector<T>::push_back(value_type &&value) -> reference {
 
 template <class T>
 template <class... Args>
-auto disk_vector<T>::emplace_back(Args &&... args) -> reference {
+auto mmap_vector<T>::emplace_back(Args &&... args) -> reference {
   reserve(size() + 1);
   std::construct_at(data() + size(), std::forward<Args>(args)...);
   ++header().size;
@@ -132,7 +134,7 @@ auto disk_vector<T>::emplace_back(Args &&... args) -> reference {
 }
 
 template <class T>
-auto disk_vector<T>::append(const_reference value) -> disk_vector & {
+auto mmap_vector<T>::append(const_reference value) -> mmap_vector & {
   reserve(size() + 1);
   std::construct_at(data() + size(), value);
   ++header().size;
@@ -140,7 +142,7 @@ auto disk_vector<T>::append(const_reference value) -> disk_vector & {
 }
 
 template <class T>
-auto disk_vector<T>::append(value_type &&value) -> disk_vector & {
+auto mmap_vector<T>::append(value_type &&value) -> mmap_vector & {
   reserve(size() + 1);
   std::construct_at(data() + size(), std::move(value));
   ++header().size;
@@ -149,12 +151,12 @@ auto disk_vector<T>::append(value_type &&value) -> disk_vector & {
 
 template <class T>
 template <class It>
-auto disk_vector<T>::append(It first, It last) -> disk_vector & {
+auto mmap_vector<T>::append(It first, It last) -> mmap_vector & {
   auto count = std::distance(first, last);
   reserve(size() + count);
   if constexpr (std::is_trivially_copyable_v<T> && std::contiguous_iterator<It>)
     std::memcpy(data() + size(), std::to_address(first), count * element_size());
-  else for (iterator it = data() + size(); first != last; ++it, ++first) std::construct_at(it, *first);
+  else for (auto it = data() + size(); first != last; ++it, ++first) std::construct_at(it, *first);
   header().size += count;
   return *this;
 }

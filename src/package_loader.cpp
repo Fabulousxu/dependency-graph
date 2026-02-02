@@ -10,76 +10,63 @@
 #include "dependency_graph.hpp"
 #include "util.hpp"
 
-auto PackageLoader::parse_dependency(std::string_view raw_dep, GroupId group) const noexcept -> DependencyItem {
-  std::string_view vcons;
+DependencyInfo PackageLoader::parse_dependency(std::string_view raw_dep, std::string_view dtype) noexcept {
+  DependencyInfo info{.dependency_type = dtype};
   auto lpar = raw_dep.find('(');
   if (lpar != std::string_view::npos) {
     auto rpar = raw_dep.rfind(')');
     if (rpar != std::string_view::npos && rpar > lpar)
-      vcons = trim(raw_dep.substr(lpar + 1, rpar - lpar - 1));
+      info.version_constraint = trim(raw_dep.substr(lpar + 1, rpar - lpar - 1));
   }
-
   auto name_and_arch = raw_dep.substr(0, lpar);
   auto colon = name_and_arch.find(':');
-  auto arch = colon != std::string_view::npos ? trim(name_and_arch.substr(colon + 1)) : "native";
-  return {
-    .package_name = trim(name_and_arch.substr(0, colon)),
-    .version_constraint = vcons,
-    .architecture_constraint = graph_.add_architecture(arch),
-    .group = group
-  };
+  info.package_name = trim(name_and_arch.substr(0, colon));
+  info.architecture_constraint = colon != std::string_view::npos ? trim(name_and_arch.substr(colon + 1)) : "native";
+  return info;
 }
 
-auto PackageLoader::parse_dependencies(std::string_view raw_deps, GroupId &group) const noexcept
-  -> std::vector<DependencyItem> {
-  std::vector<DependencyItem> result;
+void PackageLoader::parse_dependencies(std::string_view raw_deps, std::string_view dtype, PackageInfo &info) noexcept {
   for (auto and_ : raw_deps | std::views::split(',')) {
     auto or_s = and_ | std::views::split('|');
     if (std::ranges::distance(or_s) > 1) {
+      info.or_dependencies.emplace_back();
       for (auto or_ : or_s) {
         std::string_view raw_dep(or_.begin(), or_.end());
-        result.emplace_back(parse_dependency(raw_dep, group));
+        info.or_dependencies.back().emplace_back(parse_dependency(raw_dep, dtype));
       }
-      group++;
     } else {
       std::string_view raw_dep(and_.begin(), and_.end());
-      result.emplace_back(parse_dependency(raw_dep, 0));
+      info.direct_dependencies.emplace_back(parse_dependency(raw_dep, dtype));
     }
   }
-  return result;
 }
 
 void PackageLoader::load_package(std::string_view raw_package) const noexcept {
   if (trim(raw_package).empty()) return;
-  std::unordered_map<std::string_view, std::string_view> field_table;
+  std::unordered_map<std::string_view, std::string_view> fields;
   for (auto line : raw_package | std::views::split('\n')) {
     if (line.empty()) continue;
     std::string_view lview(line.begin(), line.end());
     auto colon = lview.find(':');
     if (colon != std::string_view::npos)
-      field_table.emplace(trim(lview.substr(0, colon)), trim(lview.substr(colon + 1)));
+      fields.emplace(trim(lview.substr(0, colon)), trim(lview.substr(colon + 1)));
   }
-
-  auto nit = field_table.find("Package");
-  if (nit == field_table.end()) return;
-  auto [pid, psucc] = graph_.create_package(nit->second);
-  auto ait = field_table.find("Architecture");
-  if (ait == field_table.end()) return;
-  ArchitectureType arch = graph_.add_architecture(ait->second);
-  auto vit = field_table.find("Version");
-  if (vit == field_table.end()) return;
-  auto [vid, vsucc] = graph_.create_version(pid, vit->second, arch);
-  GroupId group = 1;
-
-  for (DependencyType dtype = 0; dtype < graph_.dependency_type_count(); ++dtype) {
-    auto dtview = graph_.dependency_types()[dtype];
-    auto it = field_table.find(dtview);
-    if (it == field_table.end()) continue;
-    for (auto item : parse_dependencies(it->second, group)) {
-      auto [tpid, dpsucc] = graph_.create_package(item.package_name);
-      graph_.create_dependency(vid, tpid, item.version_constraint, item.architecture_constraint, dtype, item.group);
-    }
+  PackageInfo info;
+  auto nit = fields.find("Package");
+  if (nit == fields.end()) return;
+  info.name = nit->second;
+  auto ait = fields.find("Architecture");
+  if (ait == fields.end()) return;
+  info.architecture = ait->second;
+  auto vit = fields.find("Version");
+  if (vit == fields.end()) return;
+  info.version = vit->second;
+  for (auto dtype : graph_.dependency_types()) {
+    auto it = fields.find(dtype);
+    if (it == fields.end()) continue;
+    parse_dependencies(it->second, dtype, info);
   }
+  graph_.create_package(info);
 }
 
 void PackageLoader::load_packages(std::string_view raw_packages) const noexcept {
@@ -95,9 +82,9 @@ bool PackageLoader::load_packages_file(const std::filesystem::path &path, bool v
     if (verbose) println(std::cerr, "Failed to open packages file: {}.", path.string());
     return false;
   }
-  std::size_t pcount = graph_.buffer_package_count();
-  std::size_t vcount = graph_.buffer_version_count();
-  std::size_t dcount = graph_.buffer_dependency_count();
+  auto pcount = graph_.buffer_package_count();
+  auto vcount = graph_.buffer_version_count();
+  auto dcount = graph_.buffer_dependency_count();
   if (verbose) print("Loading packages file: {}... ", path.string());
   auto load_time = measure_time<std::chrono::milliseconds>([this, &file] {
     file.seekg(0, std::ios::end);
@@ -116,9 +103,9 @@ bool PackageLoader::load_packages_file(const std::filesystem::path &path, bool v
   if (memory_usage >= graph_.memory_limit()) {
     if (verbose)
       print("Estimated memory usage {:.1f} MiB exceeded limit {} MiB. Flushing to disk... ",
-            memory_usage / MiB_d, graph_.memory_limit() / MiB);
+            memory_usage / MiBd, graph_.memory_limit() / MiB);
     auto flush_time = measure_time<std::chrono::milliseconds>([this] { graph_.flush_buffer(); });
-    if (verbose) println("Done. ({:.3f} ms)", flush_time.count() / 1000.0);
+    if (verbose) println("Done. ({:.3f} s)", flush_time.count() / 1000.0);
   }
   if (verbose)
     println("Loaded {} packages, {} versions, {} dependencies. Total {} packages, {} versions, {} dependencies.",
@@ -148,6 +135,6 @@ bool PackageLoader::load_dataset_file(const std::filesystem::path &path, bool ve
     for (auto &filename : to_load) count += load_packages_file(std::move(filename), verbose);
     return count;
   });
-  if (verbose) println("Loaded {} packages files. ({} s)", load_count, load_time.count() / 1000.0);
+  if (verbose) println("Loaded {} packages files. ({:.3f} s)", load_count, load_time.count() / 1000.0);
   return true;
 }
