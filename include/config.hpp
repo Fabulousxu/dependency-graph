@@ -8,6 +8,7 @@ using DependencyId = std::uint32_t;
 using GroupId = std::uint8_t;
 using ArchitectureId = std::uint8_t;
 using DependencyTypeId = std::uint8_t;
+using cuda_size_t = unsigned long long;
 
 class DependencyGraph;
 class StorageGraph;

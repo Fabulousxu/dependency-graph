@@ -38,9 +38,9 @@ private:
   DependencyEdge *d_dependency_edges_;
   mutable VersionId *d_frontier_;
   mutable VersionId *d_next_;
-  std::size_t *d_next_size_;
+  cuda_size_t *d_next_size_;
   DependencyId *d_dependency_ids_;
-  std::size_t *d_dependency_count_;
+  cuda_size_t *d_dependency_count_;
   VisitedMark *d_visited_;
 
 public:

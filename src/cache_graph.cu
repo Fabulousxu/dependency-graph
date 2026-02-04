@@ -94,8 +94,8 @@ void CacheGraph::free_gpu() {
 
 __global__ void expand_frontier_kernel(
   const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
-  const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier, std::size_t frontier_size,
-  VersionId *next, std::size_t *next_size, DependencyId *dependency_ids, std::size_t *dependency_count,
+  const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier, cuda_size_t frontier_size,
+  VersionId *next, cuda_size_t *next_size, DependencyId *dependency_ids, cuda_size_t *dependency_count,
   CacheGraph::VisitedMark *visited, CacheGraph::VisitedMark mark, bool first_level, bool has_next) {
   auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= frontier_size) return;

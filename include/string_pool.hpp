@@ -139,7 +139,7 @@ private:
   };
 
   struct no_length_entry {
-    char_type data[];
+    char_type data[0];
   };
 
   using entry_type = std::conditional_t<use_length, use_length_entry, no_length_entry>;

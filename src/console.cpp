@@ -1,6 +1,6 @@
 #define NOMINMAX
-#include <nlohmann/json.hpp>
 #include "config.hpp"
+#include "data_model.hpp"
 #include "dependency_graph.hpp"
 #include "package_loader.hpp"
 #include "util.hpp"
@@ -31,7 +31,7 @@ int main() {
     print(">   use GPU (y/n): ");
     std::cin >> use_gpu;
     nlohmann::ordered_json result = graph.query_dependencies(name, ver, arch, depth, use_gpu == "y" ? 1 : 0);
-    println(result.dump(2));
+    std::cout << result.dump(2) << std::endl;
   }
   return 0;
 }

@@ -161,11 +161,11 @@ int main(int argc, char *argv[]) {
   println("All tests completed.");
   println("====================================");
 
+  std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());
+  if (!opt.output_file.empty()) std::ofstream(opt.output_file) << result.dump(2);
   println("Cleaning up...");
   inmem_graph.close();
   test_graph.close();
   std::filesystem::remove_all("./temp");
-  std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());
-  std::ofstream(opt.output_file) << result.dump(2);
   return 0;
 }

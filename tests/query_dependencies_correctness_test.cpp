@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
   app.add_option("--load-dir", opt.load_dir)->check(CLI::ExistingDirectory);
   app.add_option("--trials", opt.trials)->required()->check(CLI::PositiveNumber);
   app.add_option("--max-depth", opt.max_depth)->required()->check(CLI::PositiveNumber);
-  app.add_option("--output", opt.output_file)->required();
+  app.add_option("--output", opt.output_file);
   CLI11_PARSE(app, argc, argv);
 
   std::filesystem::create_directories("./temp");
@@ -171,11 +171,11 @@ int main(int argc, char *argv[]) {
           opt.trials * opt.max_depth, passed_cnt, opt.trials * opt.max_depth - passed_cnt);
   println("===========================================");
 
+  std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());
+  if (!opt.output_file.empty()) std::ofstream(opt.output_file) << result.dump(2);
   println("Cleaning up...");
   inmem_graph.close();
   test_graph.close();
   std::filesystem::remove_all("./temp");
-  std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());
-  std::ofstream(opt.output_file) << result.dump(2);
   return opt.trials * opt.max_depth - passed_cnt > 0;
 }

@@ -1,7 +1,4 @@
 cmake_minimum_required(VERSION 3.18)
-set(CMAKE_CXX_COMPILER cl)
-set(CMAKE_CUDA_COMPILER nvcc)
-set(CMAKE_BUILD_TYPE Release)
 project(depgraph LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
