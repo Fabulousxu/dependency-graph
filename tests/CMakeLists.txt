@@ -1,2 +1,5 @@
 add_executable(query_dependencies_correctness_test query_dependencies_correctness_test.cpp)
 target_link_libraries(query_dependencies_correctness_test PRIVATE libdepgraph)
+
+add_executable(query_dependencies_profile query_dependencies_profile.cpp)
+target_link_libraries(query_dependencies_profile PRIVATE libdepgraph)
