@@ -3,13 +3,31 @@ import re
 from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
+import matplotlib.font_manager as fm
+
+preferred_fonts = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "Noto Sans CJK SC", "WenQuanYi Zen Hei"]
+available_font_names = {f.name for f in fm.fontManager.ttflist}
+for pf in preferred_fonts:
+    if pf in available_font_names:
+        plt.rcParams["font.sans-serif"] = [pf]
+        break
+else:
+    print("[warn] No preferred Chinese font found on the system. Chinese labels may not render correctly.")
+plt.rcParams['axes.unicode_minus'] = False
 
 series_keys = {
-    "In-Memory, CPU": "in_memory_results",
-    "Storage, CPU": "disk_results",
-    "Storage, GPU": "gpu_results",
-    "Storage, Cold load, CPU": "loaded_results",
+    # "内存存储，CPU查询": "in_memory_results",
+    # "持久化存储，CPU查询": "disk_results",
+    # "持久化存储，GPU加速查询": "gpu_results",
+    # "持久化存储，冷启动，CPU查询": "loaded_results",
+    "DepGraphX-CPU": "disk_results",
+    "DepGraphX-GPU": "gpu_results",
+    "DepGraphX-Non-rearrange-CPU": "in_memory_results",
 }
+
+
+output_type = "png"
+SUPPORTED_OUTPUT_TYPES = {"png", "svg", "pdf"}
 
 
 def to_number(value):
@@ -34,7 +52,19 @@ def extract_series_points(records, latency_key):
     return points
 
 
-def draw_chart(json_path, latency_key="avg", title="", output_path=None):
+def normalize_output_path(output_path, output_type):
+    if output_path is None:
+        return None
+    output_type = (output_type or "").lstrip(".").lower()
+    if output_type not in SUPPORTED_OUTPUT_TYPES:
+        raise ValueError(
+            f"Unsupported output_type '{output_type}'. Supported: {sorted(SUPPORTED_OUTPUT_TYPES)}"
+        )
+    output_path = Path(output_path)
+    return output_path.with_suffix(f".{output_type}")
+
+
+def draw_chart(json_path, latency_key="avg", title="", output_path=None, output_type=output_type):
     json_path = Path(json_path)
     with json_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -54,73 +84,77 @@ def draw_chart(json_path, latency_key="avg", title="", output_path=None):
     if not found_any:
         raise ValueError(f"No plottable data found in {json_path} for latency_key='{latency_key}'.")
 
-    plt.title(title, fontsize=20)
-    plt.xlabel("depth", fontsize=20)
+    # plt.title(title, fontsize=20)
+    # plt.xlabel("depth", fontsize=20)
     ax = plt.gca()
     ax.xaxis.set_major_locator(MultipleLocator(1))
-    ax.tick_params(axis="both", labelsize=20)
-    plt.ylabel("mean latency (ms)", fontsize=20)
+    ax.tick_params(axis="both", labelsize=24)
+    plt.xlabel("查询深度", fontsize=24)
+    plt.ylabel("平均查询时延（毫秒）", fontsize=24)
     plt.grid(True, linestyle="--", alpha=0.4)
-    plt.legend(fontsize=20)
+    plt.legend(fontsize=20, loc="upper left")
     plt.tight_layout()
 
     if output_path is not None:
-        output_path = Path(output_path)
+        output_path = normalize_output_path(output_path, output_type)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=150)
+        # dpi only affects raster output (png); harmless for vector formats
+        plt.savefig(output_path, dpi=300)
         print(f"Saved chart to: {output_path}")
 
-    plt.show()
+    # plt.show()
+
+
 
 
 if __name__ == "__main__":
     draw_chart("../results/query_dependencies_benchmark_50_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_b.pdf")
     draw_chart("../results/query_dependencies_benchmark_100_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_c.pdf")
     draw_chart("../results/query_dependencies_benchmark_200_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_d.pdf")
     draw_chart("../results/query_dependencies_benchmark_388_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset E",
-               "../docs/figures/query_dependencies_benchmark_dataset_e.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_e.pdf")
 
     draw_chart("../results/query_dependencies_benchmark_50_memory_256m_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b_memory_256m.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_b_memory_256m.pdf")
     draw_chart("../results/query_dependencies_benchmark_100_memory_256m_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c_memory_256m.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_c_memory_256m.pdf")
     draw_chart("../results/query_dependencies_benchmark_200_memory_256m_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d_memory_256m.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_d_memory_256m.pdf")
 
     series_keys = {
-        "Storage, CPU": "disk_results",
-        "Storage, GPU": "gpu_results",
+        "CPU": "disk_results",
+        "GPU": "gpu_results",
     }
 
     draw_chart("../results/query_dependencies_benchmark_50_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b_gpu_only.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_b_gpu_only.pdf")
     draw_chart("../results/query_dependencies_benchmark_100_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c_gpu_only.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_c_gpu_only.pdf")
     draw_chart("../results/query_dependencies_benchmark_200_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d_gpu_only.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_d_gpu_only.pdf")
     draw_chart("../results/query_dependencies_benchmark_388_result.json", "avg",
                "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset E",
-               "../docs/figures/query_dependencies_benchmark_dataset_e_gpu_only.png")
+               "../docs/figures/query_dependencies_benchmark_dataset_e_gpu_only.pdf")
 
-    draw_chart("../results/query_dependencies_benchmark_50_memory_256m_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b_memory_256m_gpu_only.png")
-    draw_chart("../results/query_dependencies_benchmark_100_memory_256m_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c_memory_256m_gpu_only.png")
-    draw_chart("../results/query_dependencies_benchmark_200_memory_256m_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d_memory_256m_gpu_only.png")
+    # draw_chart("../results/query_dependencies_benchmark_50_memory_256m_result.json", "avg",
+    #            "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset B",
+    #            "../docs/figures/query_dependencies_benchmark_dataset_b_memory_256m_gpu_only.pdf")
+    # draw_chart("../results/query_dependencies_benchmark_100_memory_256m_result.json", "avg",
+    #            "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset C",
+    #            "../docs/figures/query_dependencies_benchmark_dataset_c_memory_256m_gpu_only.pdf")
+    # draw_chart("../results/query_dependencies_benchmark_200_memory_256m_result.json", "avg",
+    #            "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset D",
+    #            "../docs/figures/query_dependencies_benchmark_dataset_d_memory_256m_gpu_only.pdf")
