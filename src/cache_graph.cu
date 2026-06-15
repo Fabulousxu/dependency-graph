@@ -1,131 +1,138 @@
 #include "cache_graph.hpp"
+#include <algorithm>
 #include <cuda_runtime.h>
+#include <memory>
+#include <numeric>
 #include <ranges>
-#include "dependency_graph.hpp"
+#include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include "storage_graph.hpp"
 
-CacheGraph::CacheGraph(const StorageGraph &graph) noexcept
-  : storage_graph_(graph), mark_(1), d_package_nodes_(nullptr), d_version_nodes_(nullptr), d_dependency_edges_(nullptr),
-    d_frontier_(nullptr), d_next_(nullptr), d_next_size_(nullptr), d_dependency_ids_(nullptr),
-    d_dependency_count_(nullptr), d_visited_(nullptr) {}
+namespace xpg {
 
-void CacheGraph::build_cache() {
+void cudaCheck(cudaError_t code) {
+  if (code == cudaSuccess) return;
+  throw std::runtime_error(cudaGetErrorString(code));
+}
+
+CacheGraph::CacheGraph(const StorageGraph &graph) noexcept
+  : storage_graph_(graph), package_nodes_(nullptr), version_nodes_(nullptr), dependency_edges_(nullptr),
+    frontier_(nullptr), frontier_trees_(nullptr), next_(nullptr), next_trees_(nullptr), next_size_(nullptr),
+    result_(nullptr), result_trees_(nullptr), result_size_(nullptr), visited_(nullptr), mark_(1) {}
+
+void CacheGraph::build() {
+  clear();
   std::vector<PackageNode> pnodes;
   std::vector<VersionNode> vnodes;
   std::vector<DependencyEdge> dedges;
-  to_cache_version_id_.resize(storage_graph_.version_count());
-
+  to_cache_version_id_.resize(storage_graph_.version_nodes_.size());
   for (const auto &pnode : storage_graph_.package_nodes_) {
     auto vbegin = static_cast<VersionId>(vnodes.size());
     auto vcount = static_cast<VersionCount>(0);
-
-    for (auto vlid = pnode.version_list; vlid != storage_graph_.version_list_end;) {
-      const auto &vlnode = storage_graph_.version_list_nodes_[vlid];
-      for (auto vid = vlnode.version_begin; vid < vlnode.version_begin + vlnode.version_count; ++vid) {
-        const auto &vnode = storage_graph_.version_nodes_[vid];
-        auto cvid = static_cast<VersionId>(vnodes.size());
-        to_cache_version_id_[vid] = cvid;
-        vnodes.push_back({
-          .architecture = vnode.architecture,
-          .dependency_count = static_cast<DependencyCount>(vnode.dependency_count),
-          .dependency_begin = static_cast<DependencyId>(dedges.size())
-        });
-
-        for (auto did = vnode.dependency_begin; did < vnode.dependency_begin + vnode.dependency_count; ++did) {
-          const auto &dedge = storage_graph_.dependency_edges_[did];
-          dedges.push_back({
-            .original_id = did,
-            .to_package = dedge.to_package,
-            .architecture_constraint = dedge.architecture_constraint,
-            .dependency_type = dedge.dependency_type,
-            .group = dedge.group,
-          });
-        }
-        ++vcount;
-      }
-      vlid = vlnode.next;
-    }
-    pnodes.push_back({
-      .version_begin = vbegin,
-      .version_count = vcount
+    storage_graph_.for_each_version(pnode, [&, this](VersionId vid, const StorageGraph::VersionNode &vnode) {
+      to_cache_version_id_[vid] = static_cast<VersionId>(vnodes.size());
+      vnodes.push_back({vnode.architecture, vnode.dependency_count, static_cast<DependencyId>(dedges.size())});
+      storage_graph_.for_each_dependency(vnode, [&](DependencyId did, const StorageGraph::DependencyEdge &dedge) {
+        dedges.push_back({did, dedge.to_package, dedge.architecture_constraint, dedge.type, dedge.group});
+      });
+      ++vcount;
     });
+    pnodes.push_back({vbegin, vcount});
   }
-  init_gpu(pnodes, vnodes, dedges);
+  cudaCheck(cudaMalloc(&package_nodes_, pnodes.size() * sizeof(PackageNode)));
+  cudaCheck(cudaMalloc(&version_nodes_, vnodes.size() * sizeof(VersionNode)));
+  cudaCheck(cudaMalloc(&dependency_edges_, dedges.size() * sizeof(DependencyEdge)));
+  cudaCheck(cudaMalloc(&frontier_, kMaxDeviceVectorBytes));
+  cudaCheck(cudaMalloc(&frontier_trees_, kMaxDeviceVectorBytes));
+  cudaCheck(cudaMalloc(&next_, kMaxDeviceVectorBytes));
+  cudaCheck(cudaMalloc(&next_trees_, kMaxDeviceVectorBytes));
+  cudaCheck(cudaMalloc(&next_size_, sizeof(cuda_size_t)));
+  cudaCheck(cudaMalloc(&result_, kMaxDeviceVectorBytes));
+  cudaCheck(cudaMalloc(&result_trees_, kMaxDeviceVectorBytes));
+  cudaCheck(cudaMalloc(&result_size_, sizeof(cuda_size_t)));
+  cudaCheck(cudaMalloc(&visited_, vnodes.size() * sizeof(VisitedMark)));
+  cudaCheck(cudaMemcpy(package_nodes_, pnodes.data(), pnodes.size() * sizeof(PackageNode), cudaMemcpyHostToDevice));
+  cudaCheck(cudaMemcpy(version_nodes_, vnodes.data(), vnodes.size() * sizeof(VersionNode), cudaMemcpyHostToDevice));
+  cudaCheck(cudaMemcpy(dependency_edges_, dedges.data(), dedges.size() * sizeof(DependencyEdge),
+                       cudaMemcpyHostToDevice));
+  cudaCheck(cudaMemset(visited_, 0, vnodes.size() * sizeof(VisitedMark)));
   mark_ = 1;
 }
 
-void CacheGraph::init_gpu(const std::vector<PackageNode> &pnodes, const std::vector<VersionNode> &vnodes,
-                          const std::vector<DependencyEdge> &dedges) {
-  cudaMalloc(&d_package_nodes_, pnodes.size() * sizeof(PackageNode));
-  cudaMalloc(&d_version_nodes_, vnodes.size() * sizeof(VersionNode));
-  cudaMalloc(&d_dependency_edges_, dedges.size() * sizeof(DependencyEdge));
-  cudaMalloc(&d_frontier_, kMaxDeviceVectorBytes);
-  cudaMalloc(&d_next_, kMaxDeviceVectorBytes);
-  cudaMalloc(&d_next_size_, sizeof(std::size_t));
-  cudaMalloc(&d_dependency_ids_, kMaxDeviceVectorBytes);
-  cudaMalloc(&d_dependency_count_, sizeof(std::size_t));
-  cudaMalloc(&d_visited_, vnodes.size() * sizeof(VisitedMark));
-  cudaMemcpy(d_package_nodes_, pnodes.data(), pnodes.size() * sizeof(PackageNode), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_version_nodes_, vnodes.data(), vnodes.size() * sizeof(VersionNode), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_dependency_edges_, dedges.data(), dedges.size() * sizeof(DependencyEdge), cudaMemcpyHostToDevice);
-  cudaMemset(d_visited_, 0, vnodes.size() * sizeof(VisitedMark));
+void CacheGraph::clear() {
+  if (package_nodes_) cudaCheck(cudaFree(package_nodes_));
+  if (version_nodes_) cudaCheck(cudaFree(version_nodes_));
+  if (dependency_edges_) cudaCheck(cudaFree(dependency_edges_));
+  if (frontier_) cudaCheck(cudaFree(frontier_));
+  if (frontier_trees_) cudaCheck(cudaFree(frontier_trees_));
+  if (next_) cudaCheck(cudaFree(next_));
+  if (next_trees_) cudaCheck(cudaFree(next_trees_));
+  if (next_size_) cudaCheck(cudaFree(next_size_));
+  if (result_) cudaCheck(cudaFree(result_));
+  if (result_trees_) cudaCheck(cudaFree(result_trees_));
+  if (result_size_) cudaCheck(cudaFree(result_size_));
+  if (visited_) cudaCheck(cudaFree(visited_));
+  package_nodes_ = nullptr;
+  version_nodes_ = nullptr;
+  dependency_edges_ = nullptr;
+  frontier_ = nullptr;
+  frontier_trees_ = nullptr;
+  next_ = nullptr;
+  next_trees_ = nullptr;
+  next_size_ = nullptr;
+  result_ = nullptr;
+  result_trees_ = nullptr;
+  result_size_ = nullptr;
+  visited_ = nullptr;
 }
 
-void CacheGraph::free_gpu() {
-  if (d_package_nodes_) cudaFree(d_package_nodes_);
-  if (d_version_nodes_) cudaFree(d_version_nodes_);
-  if (d_dependency_edges_) cudaFree(d_dependency_edges_);
-  if (d_frontier_) cudaFree(d_frontier_);
-  if (d_next_) cudaFree(d_next_);
-  if (d_next_size_) cudaFree(d_next_size_);
-  if (d_dependency_ids_) cudaFree(d_dependency_ids_);
-  if (d_dependency_count_) cudaFree(d_dependency_count_);
-  if (d_visited_) cudaFree(d_visited_);
-  d_package_nodes_ = nullptr;
-  d_version_nodes_ = nullptr;
-  d_dependency_edges_ = nullptr;
-  d_frontier_ = nullptr;
-  d_next_ = nullptr;
-  d_next_size_ = nullptr;
-  d_dependency_ids_ = nullptr;
-  d_dependency_count_ = nullptr;
-  d_visited_ = nullptr;
+std::variant<DependencyTree, DependencyFlat> CacheGraph::query_dependencies(
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const {
+  if (tree) return query_dependency_tree(name, version, architecture, depth);
+  return query_dependency_flat(name, version, architecture, depth);
 }
 
-__global__ void expand_frontier_kernel(
-  const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
-  const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier, cuda_size_t frontier_size,
-  VersionId *next, cuda_size_t *next_size, DependencyId *dependency_ids, cuda_size_t *dependency_count,
-  CacheGraph::VisitedMark *visited, CacheGraph::VisitedMark mark, bool first_level, bool has_next) {
+std::vector<VersionId> CacheGraph::init_frontier(std::string_view name, std::string_view version,
+                                                 std::string_view architecture) const {
+  std::vector<VersionId> frontier = storage_graph_.init_frontier(name, version, architecture);
+  for (auto &vid : frontier) vid = to_cache_version_id_[vid];
+  return frontier;
+}
+
+__global__ void expand_tree(const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
+                            const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier,
+                            const CacheGraph::TreeId *frontier_trees, cuda_size_t frontier_size, VersionId *next,
+                            CacheGraph::TreeId *next_trees, cuda_size_t *next_size, DependencyId *result,
+                            CacheGraph::TreeId *result_trees, cuda_size_t *result_size,
+                            CacheGraph::VisitedMark *visited, CacheGraph::VisitedMark mark, cuda_size_t depth,
+                            cuda_size_t level, cuda_size_t tree_size) {
   auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= frontier_size) return;
-  if (first_level) {
+  if (level == 0) {
     auto old = visited[frontier[idx]];
     atomicCAS(&visited[frontier[idx]], old, mark);
   }
-
-  auto vid = frontier[idx];
-  const auto &vnode = version_nodes[vid];
+  const auto &vnode = version_nodes[frontier[idx]];
   for (auto did = vnode.dependency_begin; did < vnode.dependency_begin + vnode.dependency_count; ++did) {
     const auto &dedge = dependency_edges[did];
-    auto pos = atomicAdd(dependency_count, 1);
-    if (pos < kMaxDeviceVectorBytes) dependency_ids[pos] = dedge.original_id;
-
-    if (has_next && dedge.dependency_type == 0 && dedge.group == 0) {
+    auto rpos = atomicAdd(result_size, 1);
+    if (rpos < kMaxDeviceVectorSize<DependencyId>) {
+      result[rpos] = dedge.original;
+      result_trees[rpos] = frontier_trees[idx];
+    }
+    if (level + 1 < depth && dedge.type == kDependsType && dedge.group == 0) {
       const auto &tpnode = package_nodes[dedge.to_package];
-      for (auto nvid = tpnode.version_begin; nvid < tpnode.version_begin + tpnode.version_count; ++nvid) {
-        if (visited[nvid] == mark) continue;
-        const auto &nvnode = version_nodes[nvid];
-        bool match = false;
-        if (dedge.architecture_constraint == 0)
-          match = nvnode.architecture == vnode.architecture || nvnode.architecture == 2;
-        else if (dedge.architecture_constraint == 1) match = true;
-        else match = nvnode.architecture == dedge.architecture_constraint;
-        if (match) {
-          auto old = visited[nvid];
-          if (atomicCAS(&visited[nvid], old, mark) != mark) {
-            pos = atomicAdd(next_size, 1);
-            if (pos < kMaxDeviceVectorBytes) next[pos] = nvid;
+      for (auto vid = tpnode.version_begin; vid < tpnode.version_begin + tpnode.version_count; ++vid) {
+        if (visited[vid] == mark) continue;
+        const auto &vnode = version_nodes[vid];
+        if (!StorageGraph::match_architecture(vnode.architecture, dedge.architecture_constraint)) continue;
+        auto old = visited[vid];
+        if (atomicCAS(&visited[vid], old, mark) != mark) {
+          auto npos = atomicAdd(next_size, 1);
+          if (npos < kMaxDeviceVectorSize<VersionId>) {
+            next[npos] = vid;
+            next_trees[npos] = tree_size + rpos;
           }
         }
       }
@@ -133,68 +140,176 @@ __global__ void expand_frontier_kernel(
   }
 }
 
-DependencyLevel CacheGraph::expand_frontier(std::size_t &frontier_size, bool first_level, bool has_next) const {
-  DependencyLevel result;
-  cudaMemset(d_next_size_, 0, sizeof(std::size_t));
-  cudaMemset(d_dependency_count_, 0, sizeof(std::size_t));
-  int threads = 256, blocks = (frontier_size + threads - 1) / threads;
-  expand_frontier_kernel<<<blocks, threads>>>(
-    d_package_nodes_, d_version_nodes_, d_dependency_edges_, d_frontier_, frontier_size, d_next_, d_next_size_,
-    d_dependency_ids_, d_dependency_count_, d_visited_, mark_, first_level, has_next);
-  cudaDeviceSynchronize();
+DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::string_view version,
+                                                 std::string_view architecture, std::size_t depth) const {
+  auto frontier = init_frontier(name, version, architecture);
+  if (frontier.empty()) return DependencyTree();
+  std::size_t frontier_size = frontier.size();
+  struct BuildTreeNode {
+    DependencyTree value;
+    std::vector<TreeId> single_dependencies;
+    std::vector<std::vector<TreeId>> alternative_dependencies;
+  };
+  std::vector<BuildTreeNode> trees(1);
+  std::vector<TreeId> frontier_parents(frontier_size, 0);
+  cudaCheck(cudaMemcpy(frontier_, frontier.data(), frontier_size * sizeof(VersionId), cudaMemcpyHostToDevice));
+  cudaCheck(cudaMemcpy(frontier_trees_, frontier_parents.data(), frontier_parents.size() * sizeof(TreeId),
+                       cudaMemcpyHostToDevice));
+  for (auto level = 0; level < depth && frontier_size > 0; ++level) {
+    cudaCheck(cudaMemset(next_size_, 0, sizeof(cuda_size_t)));
+    cudaCheck(cudaMemset(result_size_, 0, sizeof(cuda_size_t)));
+    int threads = 256, blocks = (frontier_size + threads - 1) / threads;
+    cuda_size_t tree_size = trees.size();
+    expand_tree<<<blocks, threads>>>(
+      package_nodes_, version_nodes_, dependency_edges_, frontier_, frontier_trees_, frontier_size, next_, next_trees_,
+      next_size_, result_, result_trees_, result_size_, visited_, mark_, depth, level, tree_size);
+    cudaCheck(cudaGetLastError());
+    cudaCheck(cudaDeviceSynchronize());
+    cuda_size_t result_size;
+    cudaCheck(cudaMemcpy(&result_size, result_size_, sizeof(cuda_size_t), cudaMemcpyDeviceToHost));
+    if (result_size >= kMaxDeviceVectorSize<VersionId>) throw std::out_of_range("Reached max device vector size");
+    std::vector<DependencyId> result_level(result_size);
+    std::vector<TreeId> result_trees(result_size);
+    cudaCheck(cudaMemcpy(result_level.data(), result_, result_size * sizeof(DependencyId), cudaMemcpyDeviceToHost));
+    cudaCheck(cudaMemcpy(result_trees.data(), result_trees_, result_size * sizeof(TreeId),
+                         cudaMemcpyDeviceToHost));
 
-  std::size_t dcount;
-  cudaMemcpy(&dcount, d_dependency_count_, sizeof(std::size_t), cudaMemcpyDeviceToHost);
-  if (dcount >= kMaxDeviceVectorBytes) throw std::out_of_range("Reached max device vector size");
-  std::vector<DependencyId> dids(dcount);
-  cudaMemcpy(dids.data(), d_dependency_ids_, dcount * sizeof(DependencyId), cudaMemcpyDeviceToHost);
-  std::unordered_map<VersionId, std::vector<DependencyGroup>> groups_by_ver;
-  std::unordered_set<DependencyInfo> visited_dinfos;
-  std::unordered_map<VersionId, std::vector<std::unordered_set<DependencyInfo>>> visited_ginfos_by_ver;
-
-  for (auto did : dids) {
-    const auto &dedge = storage_graph_.dependency_edges_[did];
-    auto vid = dedge.from_version;
-    auto &groups = groups_by_ver[vid];
-    auto &visited_ginfos = visited_ginfos_by_ver[vid];
-    auto info = storage_graph_.to_info(did);
-
-    if (dedge.group > 0) {
-      if (dedge.group > groups.size()) {
-        groups.resize(dedge.group);
-        visited_ginfos.resize(dedge.group);
-      }
-      auto [it, succ] = visited_ginfos[dedge.group - 1].emplace(info);
-      if (succ) groups[dedge.group - 1].emplace_back(std::move(info));
-    } else {
-      auto [it, succ] = visited_dinfos.emplace(info);
-      if (succ) result.direct_dependencies.emplace_back(std::move(info));
+    std::unordered_map<TreeId, std::unordered_map<VersionId, std::vector<std::vector<TreeId>>>> groupsss;
+    for (auto i : std::views::iota(0ull, result_size)) {
+      const auto &dedge = storage_graph_.dependency_edges_[result_level[i]];
+      const auto &pnode = storage_graph_.package_nodes_[dedge.to_package];
+      auto &groups = groupsss[result_trees[i]][dedge.from_version];
+      DependencyTree tree{
+        storage_graph_.string_pool_[pnode.name], storage_graph_.dependency_types_[dedge.type],
+        storage_graph_.string_pool_[dedge.version_constraint],
+        storage_graph_.architectures_[dedge.architecture_constraint]
+      };
+      auto tid = static_cast<TreeId>(trees.size());
+      trees.emplace_back(tree);
+      if (dedge.group > 0) {
+        if (dedge.group > groups.size()) groups.resize(dedge.group);
+        groups[dedge.group - 1].emplace_back(tid);
+      } else trees[result_trees[i]].single_dependencies.emplace_back(tid);
+    }
+    for (auto &[tid, groupss] : groupsss)
+      for (auto &groups : groupss | std::views::values)
+        for (auto &group : groups)
+          if (!group.empty()) trees[tid].alternative_dependencies.emplace_back(std::move(group));
+    if (level + 1 < depth) {
+      cudaCheck(cudaMemcpy(&frontier_size, next_size_, sizeof(cuda_size_t), cudaMemcpyDeviceToHost));
+      if (frontier_size >= kMaxDeviceVectorSize<VersionId>) throw std::out_of_range("Reached max device vector size");
+      std::swap(frontier_, next_);
+      std::swap(frontier_trees_, next_trees_);
     }
   }
-  for (auto &groups : groups_by_ver | std::views::values)
-    for (auto &group : groups) if (!group.empty()) result.or_dependencies.emplace_back(std::move(group));
-
-  if (has_next) {
-    cudaMemcpy(&frontier_size, d_next_size_, sizeof(std::size_t), cudaMemcpyDeviceToHost);
-    if (frontier_size >= kMaxDeviceVectorBytes) throw std::out_of_range("Reached max device vector size");
-    std::swap(d_frontier_, d_next_);
+  auto build_tree = [&](const auto &self, TreeId tid) -> DependencyTree {
+    DependencyTree tree = std::move(trees[tid].value);
+    for (auto subtid : trees[tid].single_dependencies) tree.single_dependencies.emplace_back(self(self, subtid));
+    for (auto group : trees[tid].alternative_dependencies) {
+      tree.alternative_dependencies.emplace_back();
+      for (auto subtid : group) tree.alternative_dependencies.back().emplace_back(self(self, subtid));
+    }
+    return tree;
+  };
+  if (++mark_ == 0) {
+    cudaCheck(cudaMemset(visited_, 0, to_cache_version_id_.size() * sizeof(VisitedMark)));
+    mark_ = 1;
   }
-  return result;
+  return build_tree(build_tree, 0);
 }
 
-DependencyResult CacheGraph::query_dependencies(std::vector<VersionId> &frontier, std::size_t depth) const {
-  DependencyResult result(depth);
+__global__ void expand_flat(const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
+                            const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier,
+                            cuda_size_t frontier_size, VersionId *next, cuda_size_t *next_size,
+                            DependencyId *result, cuda_size_t *result_size, CacheGraph::VisitedMark *visited,
+                            CacheGraph::VisitedMark mark, cuda_size_t depth, cuda_size_t level) {
+  auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= frontier_size) return;
+  if (level == 0) {
+    auto old = visited[frontier[idx]];
+    atomicCAS(&visited[frontier[idx]], old, mark);
+  }
+  const auto &vnode = version_nodes[frontier[idx]];
+  for (auto did = vnode.dependency_begin; did < vnode.dependency_begin + vnode.dependency_count; ++did) {
+    const auto &dedge = dependency_edges[did];
+    auto pos = atomicAdd(result_size, 1);
+    if (pos < kMaxDeviceVectorSize<DependencyId>) result[pos] = dedge.original;
+    if (level + 1 < depth && dedge.type == kDependsType && dedge.group == 0) {
+      const auto &pnode = package_nodes[dedge.to_package];
+      for (auto vid = pnode.version_begin; vid < pnode.version_begin + pnode.version_count; ++vid) {
+        if (visited[vid] == mark) continue;
+        const auto &vnode = version_nodes[vid];
+        if (!StorageGraph::match_architecture(vnode.architecture, dedge.architecture_constraint)) continue;
+        auto old = visited[vid];
+        if (atomicCAS(&visited[vid], old, mark) != mark) {
+          pos = atomicAdd(next_size, 1);
+          if (pos < kMaxDeviceVectorSize<VersionId>) next[pos] = vid;
+        }
+      }
+    }
+  }
+}
+
+DependencyFlat CacheGraph::query_dependency_flat(std::string_view name, std::string_view version,
+                                                 std::string_view architecture, std::size_t depth) const {
+  DependencyFlat result(depth);
+  auto frontier = init_frontier(name, version, architecture);
   if (frontier.empty()) return result;
-  std::size_t frontier_size = frontier.size();
-  for (auto &vid : frontier) vid = to_cache_version_id_[vid];
-  cudaMemcpy(d_frontier_, frontier.data(), frontier_size * sizeof(VersionId), cudaMemcpyHostToDevice);
-  for (auto level = 0; level < depth; ++level) {
-    result[level] = expand_frontier(frontier_size, level == 0, level + 1 < depth);
-    if (frontier_size == 0) break;
+  cuda_size_t frontier_size = frontier.size();
+  cudaCheck(cudaMemcpy(frontier_, frontier.data(), frontier_size * sizeof(VersionId), cudaMemcpyHostToDevice));
+  for (auto level = 0; level < depth && frontier_size > 0; ++level) {
+    cudaCheck(cudaMemset(next_size_, 0, sizeof(cuda_size_t)));
+    cudaCheck(cudaMemset(result_size_, 0, sizeof(cuda_size_t)));
+    int threads = 256, blocks = (frontier_size + threads - 1) / threads;
+    expand_flat<<<blocks, threads>>>(package_nodes_, version_nodes_, dependency_edges_, frontier_, frontier_size,
+                                     next_, next_size_, result_, result_size_, visited_, mark_, depth, level);
+    cudaCheck(cudaGetLastError());
+    cudaCheck(cudaDeviceSynchronize());
+    cuda_size_t result_size;
+    cudaCheck(cudaMemcpy(&result_size, result_size_, sizeof(cuda_size_t), cudaMemcpyDeviceToHost));
+    if (result_size >= kMaxDeviceVectorSize<VersionId>) throw std::out_of_range("Reached max device vector size");
+    std::vector<DependencyId> result_level(result_size);
+    cudaCheck(cudaMemcpy(result_level.data(), result_, result_size * sizeof(DependencyId), cudaMemcpyDeviceToHost));
+
+    std::unordered_map<VersionId, std::vector<std::vector<DependencyInfo>>> groupss;
+    std::unordered_set<DependencyInfo> visited_dinfos;
+    std::unordered_map<VersionId, std::vector<std::unordered_set<DependencyInfo>>> visited_ginfoss;
+    for (auto did : result_level) {
+      const auto &dedge = storage_graph_.dependency_edges_[did];
+      const auto &pnode = storage_graph_.package_nodes_[dedge.to_package];
+      auto &groups = groupss[dedge.from_version];
+      auto &visited_ginfos = visited_ginfoss[dedge.from_version];
+      DependencyInfo info{
+        storage_graph_.string_pool_[pnode.name], storage_graph_.dependency_types_[dedge.type],
+        storage_graph_.string_pool_[dedge.version_constraint],
+        storage_graph_.architectures_[dedge.architecture_constraint]
+      };
+      if (dedge.group > 0) {
+        if (dedge.group > groups.size()) {
+          groups.resize(dedge.group);
+          visited_ginfos.resize(dedge.group);
+        }
+        auto [it, succ] = visited_ginfos[dedge.group - 1].emplace(info);
+        if (succ) groups[dedge.group - 1].emplace_back(std::move(info));
+      } else {
+        auto [it, succ] = visited_dinfos.emplace(info);
+        if (succ) result[level].single_dependencies.emplace_back(std::move(info));
+      }
+    }
+    for (auto &groups : groupss | std::views::values)
+      for (auto &group : groups)
+        if (!group.empty()) result[level].alternative_dependencies.emplace_back(std::move(group));
+    if (level + 1 < depth) {
+      cudaCheck(cudaMemcpy(&frontier_size, next_size_, sizeof(cuda_size_t), cudaMemcpyDeviceToHost));
+      if (frontier_size >= kMaxDeviceVectorSize<VersionId>) throw std::out_of_range("Reached max device vector size");
+      std::swap(frontier_, next_);
+    }
   }
   if (++mark_ == 0) {
-    cudaMemset(d_visited_, 0, to_cache_version_id_.size() * sizeof(VisitedMark));
+    cudaCheck(cudaMemset(visited_, 0, to_cache_version_id_.size() * sizeof(VisitedMark)));
     mark_ = 1;
   }
   return result;
 }
+
+} // namespace xpg

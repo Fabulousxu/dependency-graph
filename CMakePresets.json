@@ -3,9 +3,9 @@
   "configurePresets": [
     {
       "name": "msvc-release",
-      "displayName": "Windows MSVC Release",
+      "displayName": "MSVC Release",
       "generator": "Ninja",
-      "binaryDir": "build-msvc",
+      "binaryDir": "build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "cl.exe",
@@ -14,9 +14,9 @@
     },
     {
       "name": "gcc-release",
-      "displayName": "Linux GCC Release",
+      "displayName": "GCC Release",
       "generator": "Ninja",
-      "binaryDir": "build-gcc",
+      "binaryDir": "build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "g++",

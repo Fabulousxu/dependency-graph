@@ -2,34 +2,47 @@
 #include <cstddef>
 #include <cstdint>
 
-using PackageId = std::uint32_t;
-using VersionId = std::uint32_t;
-using DependencyId = std::uint32_t;
-using GroupId = std::uint8_t;
-using ArchitectureId = std::uint8_t;
-using DependencyTypeId = std::uint8_t;
-using cuda_size_t = unsigned long long;
+namespace xpg {
 
-class DependencyGraph;
+#ifdef __CUDACC__
+#define HOST_DEVICE __host__ __device__
+#else
+#define HOST_DEVICE
+#endif
+
 class StorageGraph;
 class BufferGraph;
 class CacheGraph;
+class XPackageGraph;
 class PackageLoader;
 
-enum class open_mode : std::uint8_t { kLoad, kCreate, kLoadOrCreate };
-enum class open_code : std::uint8_t { kOpenFailed, kLoadSuccess, kCreateSuccess };
+using PackageId = std::uint32_t;
+using VersionId = std::uint32_t;
+using DependencyId = std::uint32_t;
+using ArchitectureId = std::uint8_t;
+using DependencyType = std::uint8_t;
+using GroupId = std::uint8_t;
+using StringOffset = std::uint32_t;
+using StringLength = std::uint8_t;
+using VersionRangeId = std::uint32_t;
+using VersionCount = std::uint16_t;
+using DependencyCount = std::uint16_t;
 
 inline constexpr std::size_t KiB = 1024;
 inline constexpr std::size_t MiB = 1024 * KiB;
 inline constexpr std::size_t GiB = 1024 * MiB;
 inline constexpr std::size_t TiB = 1024 * GiB;
-
 inline constexpr double KiBd = 1024;
 inline constexpr double MiBd = 1024 * KiBd;
 inline constexpr double GiBd = 1024 * MiBd;
 inline constexpr double TiBd = 1024 * GiBd;
+inline constexpr ArchitectureId kNullArchitecture = 0;
+inline constexpr ArchitectureId kAnyArchitecture = 1;
+inline constexpr ArchitectureId kAllArchitecture = 2;
+inline constexpr DependencyType kDependsType = 0;
+inline constexpr std::initializer_list<std::string_view> kDefaultArchitectures = {"", "any", "all"};
+inline constexpr std::initializer_list<std::string_view> kDefaultDependencyTypes = {
+  "Depends", "Pre-Depends", "Recommends", "Suggests", "Breaks", "Conflicts", "Provides", "Replaces", "Enhances"
+};
 
-inline constexpr std::size_t kDefaultChunkBytes = MiB;
-inline constexpr std::size_t kSmallChunkBytes = KiB;
-inline constexpr std::size_t kDefaultMemoryLimit = GiB;
-inline constexpr std::size_t kMaxDeviceVectorBytes = 64 * MiB;
+} // namespace xpg

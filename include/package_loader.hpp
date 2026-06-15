@@ -1,29 +1,28 @@
 #pragma once
 #include <filesystem>
 #include <string_view>
-#include "dependency_graph.hpp"
+#include <utility>
+#include "x_package_graph.hpp"
+
+namespace xpg {
 
 class PackageLoader {
 public:
-  PackageLoader(DependencyGraph &graph) : graph_(graph) {}
-
-  PackageLoader(const PackageLoader &) = default;
+  PackageLoader(XPackageGraph &graph) noexcept : graph_(graph) {}
+  PackageLoader(const PackageLoader &) noexcept = default;
   PackageLoader &operator=(const PackageLoader &) = delete;
-
-  PackageLoader(PackageLoader &&) = default;
+  PackageLoader(PackageLoader &&) noexcept = default;
   PackageLoader &operator=(PackageLoader &&) = delete;
-
   ~PackageLoader() = default;
 
-  void load_package(std::string_view raw_package) const noexcept;
-  void load_packages(std::string_view raw_packages) const noexcept;
+  std::pair<PackageInfo, bool> parse_deb_package(std::string_view raw_package) const noexcept;
+  std::pair<DependencyInfo, bool> parse_deb_dependency(std::string_view raw_dependency, std::string_view type,
+                                                       std::string_view architecture) const noexcept;
 
-  bool load_packages_file(const std::filesystem::path &path, bool verbose = false) const noexcept;
-  bool load_dataset_file(const std::filesystem::path &path, bool verbose = false) const noexcept;
+  bool load_deb_packages_file(const std::filesystem::path &path, bool flush_if_needed = true, bool verbose = false);
 
 private:
-  DependencyGraph &graph_;
-
-  static DependencyInfo parse_dependency(std::string_view raw_dep, std::string_view dtype) noexcept;
-  static void parse_dependencies(std::string_view raw_deps, std::string_view dtype, PackageInfo &info) noexcept;
+  XPackageGraph &graph_;
 };
+
+} // namespace xpg

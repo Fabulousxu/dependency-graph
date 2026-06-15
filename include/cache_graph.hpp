@@ -1,49 +1,23 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
+#include <variant>
 #include <vector>
 #include "config.hpp"
 #include "data_model.hpp"
 
+namespace xpg {
+
+using cuda_size_t = unsigned long long;
+inline constexpr std::size_t kMaxDeviceVectorBytes = 64 * MiB;
+template <class T> inline constexpr std::size_t kMaxDeviceVectorSize = kMaxDeviceVectorBytes / sizeof(T);
+
 class CacheGraph {
 public:
-  using VersionCount = std::uint16_t;
-  using DependencyCount = std::uint16_t;
-  using VisitedMark = std::uint16_t;
+  using VisitedMark = std::uint32_t;
+  using TreeId = std::uint32_t;
 
-  struct PackageNode;
-  struct VersionNode;
-  struct DependencyEdge;
-
-  CacheGraph(const StorageGraph &storage_graph) noexcept;
-
-  CacheGraph(const CacheGraph &) = delete;
-  CacheGraph &operator=(const CacheGraph &) = delete;
-
-  CacheGraph(CacheGraph &&) noexcept = default;
-  CacheGraph &operator=(CacheGraph &&) noexcept = delete;
-
-  ~CacheGraph() { free_gpu(); }
-
-  void build_cache();
-  void free_gpu();
-
-  DependencyResult query_dependencies(std::vector<VersionId> &frontier, std::size_t depth) const;
-
-private:
-  const StorageGraph &storage_graph_;
-  std::vector<VersionId> to_cache_version_id_;
-  mutable VisitedMark mark_;
-  PackageNode *d_package_nodes_;
-  VersionNode *d_version_nodes_;
-  DependencyEdge *d_dependency_edges_;
-  mutable VersionId *d_frontier_;
-  mutable VersionId *d_next_;
-  cuda_size_t *d_next_size_;
-  DependencyId *d_dependency_ids_;
-  cuda_size_t *d_dependency_count_;
-  VisitedMark *d_visited_;
-
-public:
   struct PackageNode {
     VersionId version_begin;
     VersionCount version_count;
@@ -56,16 +30,50 @@ public:
   };
 
   struct DependencyEdge {
-    DependencyId original_id;
+    DependencyId original;
     PackageId to_package;
     ArchitectureId architecture_constraint;
-    DependencyTypeId dependency_type;
+    DependencyType type;
     GroupId group;
   };
 
-private:
-  void init_gpu(const std::vector<PackageNode> &pnodes, const std::vector<VersionNode> &vnodes,
-                const std::vector<DependencyEdge> &dedges);
+  CacheGraph(const StorageGraph &storage_graph) noexcept;
+  CacheGraph(const CacheGraph &) = delete;
+  CacheGraph &operator=(const CacheGraph &) = delete;
+  CacheGraph(CacheGraph &&) noexcept = default;
+  CacheGraph &operator=(CacheGraph &&) noexcept = delete;
+  ~CacheGraph() { clear(); }
 
-  DependencyLevel expand_frontier(std::size_t &frontier_size, bool first_level, bool has_next) const;
+  void build();
+  void clear();
+  bool is_built() const noexcept { return frontier_ != nullptr; }
+
+  std::variant<DependencyTree, DependencyFlat> query_dependencies(
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const;
+  DependencyTree query_dependency_tree(
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+  DependencyFlat query_dependency_flat(
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+
+private:
+  const StorageGraph &storage_graph_;
+  std::vector<VersionId> to_cache_version_id_;
+  PackageNode *package_nodes_;
+  VersionNode *version_nodes_;
+  DependencyEdge *dependency_edges_;
+  mutable VersionId *frontier_;
+  mutable TreeId *frontier_trees_;
+  mutable VersionId *next_;
+  mutable TreeId *next_trees_;
+  cuda_size_t *next_size_;
+  DependencyId *result_;
+  mutable TreeId *result_trees_;
+  cuda_size_t *result_size_;
+  VisitedMark *visited_;
+  mutable VisitedMark mark_;
+
+  std::vector<VersionId> init_frontier(std::string_view name, std::string_view version,
+                                       std::string_view architecture) const;
 };
+
+} // namespace xpg
