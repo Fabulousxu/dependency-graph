@@ -1,6 +1,7 @@
 #include "storage_graph.hpp"
 #include <algorithm>
 #include <format>
+#include <ranges>
 #include <stdexcept>
 #include "buffer_graph.hpp"
 
@@ -98,13 +99,13 @@ void StorageGraph::set_growth_bytes(std::size_t growth_bytes) noexcept {
   string_pool_.set_growth_bytes(growth_bytes);
 }
 
-ArchitectureId StorageGraph::intern_architecture(std::string_view architecture) noexcept {
+ArchitectureId StorageGraph::intern_architecture(std::string_view architecture) {
   auto id = architectures_.intern(architecture);
   control().architecture_count = architectures_.size();
   return id;
 }
 
-DependencyType StorageGraph::intern_dependency_type(std::string_view dependency_type) noexcept {
+DependencyType StorageGraph::intern_dependency_type(std::string_view dependency_type) {
   auto id = dependency_types_.intern(dependency_type);
   control().dependency_type_count = dependency_types_.size();
   return id;
@@ -112,7 +113,7 @@ DependencyType StorageGraph::intern_dependency_type(std::string_view dependency_
 
 PackageView StorageGraph::get_package(PackageId pid) const noexcept {
   return {
-    string_pool_.get(package_nodes_[pid].name), [this, pid] {
+    string_pool_[package_nodes_[pid].name], [this, pid] {
       std::vector<VersionView> vviews;
       for_each_version(pid, [this, &vviews](VersionId vid) { vviews.emplace_back(get_version(vid)); });
       return vviews;
@@ -122,10 +123,23 @@ PackageView StorageGraph::get_package(PackageId pid) const noexcept {
 
 VersionView StorageGraph::get_version(VersionId vid) const noexcept {
   return {
-    string_pool_.get(version_nodes_[vid].version), architectures_.get(version_nodes_[vid].architecture), [this, vid] {
+    string_pool_[version_nodes_[vid].version], architectures_[version_nodes_[vid].architecture],
+    [this, vid] {
       std::vector<DependencyView> dviews;
-      for_each_dependency(vid, [this, &dviews](DependencyId did) { dviews.emplace_back(get_dependency(did)); });
+      for_each_dependency(vid, [&, this](DependencyId did, const DependencyEdge &dedge) {
+        if (dedge.group == 0) dviews.emplace_back(get_dependency(did));
+      });
       return dviews;
+    },
+    [this, vid] {
+      std::vector<std::vector<DependencyView>> gviews;
+      for_each_dependency(vid, [&, this](DependencyId did, const DependencyEdge &dedge) {
+        if (dedge.group == 0) return;
+        if (gviews.size() < dedge.group) gviews.resize(dedge.group);
+        gviews[dedge.group - 1].emplace_back(get_dependency(did));
+      });
+      std::erase_if(gviews, [](const auto &gview) { return gview.empty(); });
+      return gviews;
     }
   };
 }
@@ -134,8 +148,8 @@ DependencyView StorageGraph::get_dependency(DependencyId did) const noexcept {
   return {
     [this, did] { return get_version(dependency_edges_[did].from_version); },
     [this, did] { return get_package(dependency_edges_[did].to_package); },
-    dependency_types_[dependency_edges_[did].type], string_pool_.get(dependency_edges_[did].version_constraint),
-    architectures_[dependency_edges_[did].architecture_constraint], dependency_edges_[did].group,
+    dependency_types_[dependency_edges_[did].type], string_pool_[dependency_edges_[did].version_constraint],
+    architectures_[dependency_edges_[did].architecture_constraint],
   };
 }
 
@@ -274,9 +288,8 @@ void StorageGraph::compact() {
       auto vid = static_cast<VersionId>(vnodes.size());
       vnodes.push_back({vnode.version, vnode.architecture, vnode.dependency_count, dbegin});
       for_each_dependency(vnode, [&, vid](const DependencyEdge &dedge) {
-        dedges.push_back({
-          vid, dedge.to_package, dedge.version_constraint, dedge.architecture_constraint, dedge.type, dedge.group
-        });
+        dedges.push_back(
+          {vid, dedge.to_package, dedge.version_constraint, dedge.architecture_constraint, dedge.type, dedge.group});
       });
       ++vcount;
     });
@@ -354,19 +367,18 @@ std::vector<VersionId> StorageGraph::init_frontier(std::string_view name, std::s
 
 DependencyTree StorageGraph::query_dependency_tree(std::string_view name, std::string_view version,
                                                    std::string_view architecture, std::size_t depth) const {
-  DependencyTree result;
+  DependencyTree result{name, "", version, architecture};
   auto frontier = init_frontier(name, version, architecture);
   std::unordered_set visited(frontier.begin(), frontier.end());
   auto expand_tree = [&, this, depth]
   (const auto &self, VersionId vid, DependencyTree &tree, std::size_t level) -> void {
     for_each_dependency(vid, [&, this, depth, level](const DependencyEdge &dedge) {
-      const auto &pnode = package_nodes_[dedge.to_package];
       DependencyTree subtree{
-        string_pool_[pnode.name], dependency_types_[dedge.type], string_pool_[dedge.version_constraint],
-        architectures_[dedge.architecture_constraint]
+        string_pool_[package_nodes_[dedge.to_package].name], dependency_types_[dedge.type],
+        string_pool_[dedge.version_constraint], architectures_[dedge.architecture_constraint]
       };
-      if (level + 1 < depth && dedge.type == kDependsType && dedge.group == 0)
-        for_each_version(pnode, [&, level](VersionId vid, const VersionNode &vnode) {
+      if (level + 1 < depth)
+        for_each_version(package_nodes_[dedge.to_package], [&, level](VersionId vid, const VersionNode &vnode) {
           if (visited.contains(vid)) return;
           if (!match_architecture(vnode.architecture, dedge.architecture_constraint)) return;
           visited.insert(vid);
@@ -389,29 +401,28 @@ DependencyFlat StorageGraph::query_dependency_flat(std::string_view name, std::s
   std::unordered_set visited(frontier.begin(), frontier.end());
   for (auto level = 0; level < depth; ++level) {
     std::vector<VersionId> next;
-    std::unordered_set<DependencyInfo> visited_dinfos;
+    std::unordered_set<DependencyInfo> dvisited;
     for (auto vid : frontier) {
       std::vector<std::vector<DependencyInfo>> groups;
-      std::vector<std::unordered_set<DependencyInfo>> visited_ginfos;
+      std::vector<std::unordered_set<DependencyInfo>> gvisited;
       for_each_dependency(vid, [&, this, depth, level](const DependencyEdge &dedge) {
-        const auto &pnode = package_nodes_[dedge.to_package];
         DependencyInfo info{
-          string_pool_[pnode.name], dependency_types_[dedge.type], string_pool_[dedge.version_constraint],
-          architectures_[dedge.architecture_constraint]
+          string_pool_[package_nodes_[dedge.to_package].name], dependency_types_[dedge.type],
+          string_pool_[dedge.version_constraint], architectures_[dedge.architecture_constraint]
         };
         if (dedge.group > 0) {
           if (groups.size() < dedge.group) {
             groups.resize(dedge.group);
-            visited_ginfos.resize(dedge.group);
+            gvisited.resize(dedge.group);
           }
-          auto [it, succ] = visited_ginfos[dedge.group - 1].emplace(info);
+          auto [it, succ] = gvisited[dedge.group - 1].emplace(info);
           if (succ) groups[dedge.group - 1].emplace_back(std::move(info));
         } else {
-          auto [it, succ] = visited_dinfos.emplace(info);
+          auto [it, succ] = dvisited.emplace(info);
           if (succ) result[level].single_dependencies.emplace_back(std::move(info));
         }
-        if (level + 1 < depth && dedge.type == kDependsType && dedge.group == 0)
-          for_each_version(pnode, [&](VersionId vid, const VersionNode &vnode) {
+        if (level + 1 < depth)
+          for_each_version(package_nodes_[dedge.to_package], [&](VersionId vid, const VersionNode &vnode) {
             if (visited.contains(vid)) return;
             if (!match_architecture(vnode.architecture, dedge.architecture_constraint)) return;
             next.emplace_back(vid);

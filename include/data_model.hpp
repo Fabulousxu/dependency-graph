@@ -5,7 +5,6 @@
 #include <string_view>
 #include <variant>
 #include <vector>
-#include "config.hpp"
 
 namespace xpg {
 
@@ -21,7 +20,8 @@ struct PackageView {
 struct VersionView {
   std::string_view version;
   std::string_view architecture;
-  std::function<std::vector<DependencyView>()> dependencies;
+  std::function<std::vector<DependencyView>()> single_dependencies;
+  std::function<std::vector<std::vector<DependencyView>>()> alternative_dependencies;
 };
 
 struct DependencyView {
@@ -29,8 +29,7 @@ struct DependencyView {
   std::function<PackageView()> to_package;
   std::string_view type;
   std::string_view version_constraint;
-  std::string_view architecture_constraint;
-  GroupId group;
+  std::string_view architecture;
 };
 
 struct VersionInfo {
@@ -74,47 +73,7 @@ constexpr bool operator==(const DependencyInfo &l, const DependencyInfo &r) noex
     && l.version_constraint == r.version_constraint && l.architecture == r.architecture;
 }
 
-template <class Json>
-void to_json(Json &j, const VersionInfo &info) {
-  j["version"] = info.version;
-  j["architecture"] = info.architecture;
-}
-
-template <class Json>
-void to_json(Json &j, const DependencyTree &tree) {
-  j["name"] = tree.name;
-  j["type"] = tree.type;
-  j["version_constraint"] = tree.version_constraint;
-  j["architecture"] = tree.architecture;
-  j["dependencies"] = {
-    {"single_dependencies", tree.single_dependencies},
-    {"alternative_dependencies", tree.alternative_dependencies}
-  };
-}
-
-template <class Json>
-void to_json(Json &j, const DependencyInfo &info) {
-  j["name"] = info.name;
-  j["type"] = info.type;
-  j["version_constraint"] = info.version_constraint;
-  j["architecture"] = info.architecture;
-}
-
-template <class Json>
-void to_json(Json &j, const DependencyFlat &flat) {
-  for (auto i : std::views::iota(0ull, flat.size()))
-    j["depth " + std::to_string(i + 1)] = {
-      {"single_dependencies", flat[i].single_dependencies},
-      {"alternative_dependencies", flat[i].alternative_dependencies}
-    };
-}
-
-template <class Json>
-void to_json(Json &j, const std::variant<DependencyTree, DependencyFlat> &result) {
-  std::visit([&j](const auto &value) { j = value; }, result);
-}
-
-} // namespa
+} // namespace xp
 
 template <>
 struct std::hash<xpg::DependencyInfo> {

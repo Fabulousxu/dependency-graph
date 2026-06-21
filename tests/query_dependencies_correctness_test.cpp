@@ -3,61 +3,92 @@
 #include <format>
 #include <fstream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 #include <CLI/CLI11.hpp>
 #include <nlohmann/json.hpp>
-#include "dependency_graph.hpp"
+#include "json_serialization.hpp"
 #include "package_loader.hpp"
 #include "util.hpp"
+#include "x_package_graph.hpp"
 
-bool compare_result(const DependencyResult &baseline, const DependencyResult &test, nlohmann::ordered_json &failure,
-                    std::string_view baseline_name = "", std::string_view test_name = "") {
-  for (auto level = 0; level < baseline.size(); ++level) {
-    const auto &[bdirect, bor] = baseline[level];
-    const auto &[tdirect, tor] = test[level];
-    if (bdirect.size() != tdirect.size()) {
-      failure["failed_level"] = level;
-      failure["reason"] = std::format("Direct dependency count mismatch between {} and {}.", baseline_name, test_name);
-      failure[std::format("{}_direct_dependency_count", baseline_name)] = bdirect.size();
-      failure[std::format("{}_direct_dependency_count", test_name)] = tdirect.size();
+struct Option {
+  std::size_t sample_size;
+  std::size_t max_depth;
+  std::filesystem::path repository_config;
+  std::filesystem::path cache_directory;
+  std::filesystem::path temp_directory;
+  std::string output;
+};
+
+Option parse_args(int argc, char **argv) {
+  Option option;
+  CLI::App app("XPackageGraph query dependencies correctness test");
+  app.add_option("--sample-size", option.sample_size, "Number of sampled packages to test")
+     ->required()->check(CLI::PositiveNumber);
+  app.add_option("--max-depth", option.max_depth, "Maximum dependency query depth")
+     ->required()->check(CLI::PositiveNumber);
+  app.add_option("--repository-config", option.repository_config, "Repository config file to load")
+     ->required()->check(CLI::ExistingFile);
+  app.add_option("--cache-directory", option.cache_directory, "Repository cache directory to load")
+     ->required()->check(CLI::ExistingDirectory);
+  app.add_option("--temp-directory", option.temp_directory, "Temporary data directory")->default_val("temp");
+  app.add_option("--output", option.output, "Correctness result JSON path")
+     ->default_val("query_dependencies_correctness_test_report.json");
+  try { app.parse(argc, argv); } catch (const CLI::ParseError &exc) { std::exit(app.exit(exc)); }
+  return option;
+}
+
+std::vector<std::string> generate_samples(const xpg::XPackageGraph &graph, std::size_t sample_size) {
+  std::vector<std::string> samples;
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<std::size_t> dist(0, graph.package_count() - 1);
+  while (samples.size() < sample_size) {
+    auto pview = graph.get_package(dist(gen));
+    if (pview.versions().size() < 2) continue;
+    samples.emplace_back(pview.name);
+  }
+  std::ranges::sort(samples);
+  return samples;
+}
+
+template <class Json>
+bool check_result(const xpg::DependencyFlat &cpu, const xpg::DependencyFlat &gpu, Json &j) {
+  for (auto level = 0; level < cpu.size(); ++level) {
+    j["failed_level"] = level + 1;
+    const auto &clevel = cpu[level];
+    const auto &glevel = gpu[level];
+    std::unordered_set csingle(clevel.single_dependencies.begin(), clevel.single_dependencies.end());
+    std::unordered_set gsingle(glevel.single_dependencies.begin(), glevel.single_dependencies.end());
+    if (csingle != gsingle) {
+      j["reason"] = "Single dependencies mismatch between cpu and gpu.";
+      j["cpu_single_dependency_count"] = csingle.size();
+      j["gpu_single_dependency_count"] = gsingle.size();
       return false;
     }
-    if (bor.size() != tor.size()) {
-      failure["failed_level"] = level;
-      failure["reason"] = std::format("Or dependency group count mismatch between {} and {}.",
-                                      baseline_name, test_name);
-      failure[std::format("{}_or_dependency_group_count", baseline_name)] = bor.size();
-      failure[std::format("{}_or_dependency_group_count", test_name)] = tor.size();
+    std::vector<std::unordered_set<xpg::DependencyInfo>> cgroups, ggroups;
+    for (const auto &cgroup : clevel.alternative_dependencies) cgroups.emplace_back(cgroup.begin(), cgroup.end());
+    for (const auto &ggroup : glevel.alternative_dependencies) ggroups.emplace_back(ggroup.begin(), ggroup.end());
+    if (cgroups.size() != ggroups.size()) {
+      j["reason"] = "Alternative dependency group count mismatch between cpu and gpu.";
+      j["cpu_alternative_dependency_group_count"] = cgroups.size();
+      j["gpu_alternative_dependency_group_count"] = ggroups.size();
       return false;
     }
-
-    std::unordered_set bdirect_set(bdirect.begin(), bdirect.end());
-    std::unordered_set tdirect_set(tdirect.begin(), tdirect.end());
-    if (bdirect_set != tdirect_set) {
-      failure["failed_level"] = level;
-      failure["reason"] = std::format("Direct dependencies mismatch between {} and {}.", baseline_name, test_name);
-      return false;
-    }
-
-    std::vector<std::unordered_set<DependencyInfo>> bor_set, tor_set;
-    for (auto group = 0; group < bor.size(); group++) {
-      bor_set.emplace_back(bor[group].begin(), bor[group].end());
-      tor_set.emplace_back(tor[group].begin(), tor[group].end());
-    }
-    for (const auto &bgroup_set : bor_set) {
-      bool correct = false;
-      for (const auto &tgroup_set : tor_set) {
-        if (bgroup_set == tgroup_set) {
-          correct = true;
+    for (const auto &cgroup : cgroups) {
+      bool found = false;
+      for (const auto &ggroup : ggroups)
+        if (ggroup == cgroup) {
+          found = true;
           break;
         }
-      }
-      if (!correct) {
-        failure["failed_level"] = level;
-        failure["reason"] = std::format("Or dependency groups mismatch between {} and {}.", baseline_name, test_name);
+      if (!found) {
+        j["reason"] = "Alternative dependency groups mismatch between cpu and gpu.";
         return false;
       }
     }
@@ -65,117 +96,70 @@ bool compare_result(const DependencyResult &baseline, const DependencyResult &te
   return true;
 }
 
-struct Option {
-  std::string dataset_file;
-  std::string load_dir;
-  std::size_t trials;
-  std::size_t max_depth;
-  std::string output_file;
-};
-
 int main(int argc, char *argv[]) {
-  Option opt;
-  CLI::App app;
-  app.add_option("--dataset", opt.dataset_file)->required()->check(CLI::ExistingFile);
-  app.add_option("--load-dir", opt.load_dir)->check(CLI::ExistingDirectory);
-  app.add_option("--trials", opt.trials)->required()->check(CLI::PositiveNumber);
-  app.add_option("--max-depth", opt.max_depth)->required()->check(CLI::PositiveNumber);
-  app.add_option("--output", opt.output_file);
-  CLI11_PARSE(app, argc, argv);
+  auto [sample_size, max_depth, repository_config, cache_directory, temp_directory, output] = parse_args(argc, argv);
+  std::ifstream file(repository_config);
+  if (!file.good())
+    throw std::runtime_error(std::format("Failed to open repository config file: {}.", repository_config.string()));
+  auto config = nlohmann::json::parse(file).get<xpg::RepositoryConfig>();
+  xpg::XPackageGraph graph(temp_directory, xpg::open_mode::kCreate);
+  xpg::PackageLoader loader(graph);
+  nlohmann::ordered_json jreport, jfaileds = nlohmann::ordered_json::array();
+  auto load_time = xpg::measure_time<std::chrono::milliseconds>(
+    [&] { loader.load_repositories(repository_config, cache_directory, false, true); });
+  auto flush_time = xpg::measure_time<std::chrono::milliseconds>([&] { loader.flush_buffer(false, true); });
+  auto cache_time = xpg::measure_time<std::chrono::milliseconds>([&] { loader.build_cache(); });
+  auto samples = generate_samples(graph, sample_size);
 
-  std::filesystem::create_directories("./temp");
-  DependencyGraph inmem_graph(std::numeric_limits<std::size_t>::max());
-  DependencyGraph test_graph(0);
-  DependencyGraph load_graph;
-  if (!inmem_graph.create("./temp/data/in-memory")) {
-    println("Failed to create DependencyGraph at directory: {}", "./temp/data/in-memory");
-    return 1;
-  }
-  if (!test_graph.create("./temp/data/test")) {
-    println("Failed to create DependencyGraph at directory: {}", "./temp/data/test");
-    return 1;
-  }
-  if (!opt.load_dir.empty() && !load_graph.load(opt.load_dir)) {
-    println("Failed to load DependencyGraph from directory: {}", opt.load_dir);
-    return 1;
-  }
-
-  PackageLoader inmem_loader(inmem_graph);
-  PackageLoader test_loader(test_graph);
-  if (!inmem_loader.load_dataset_file(opt.dataset_file, true)) return 1;
-  if (!test_loader.load_dataset_file(opt.dataset_file, true)) return 1;
-  test_graph.flush_buffer();
-  println("Total {} packages, {} versions, {} dependencies.",
-          test_graph.package_count(), test_graph.version_count(), test_graph.dependency_count());
-  print("Building cache on GPU... ");
-  auto sync_time = measure_time<std::chrono::milliseconds>([&] { test_graph.build_cache(); });
-  println("Done. ({} ms)", sync_time.count());
-
-  std::vector<std::string> to_query;
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<std::size_t> dist(0, test_graph.package_count() - 1);
-  while (to_query.size() < opt.trials) {
-    auto pview = test_graph.get_package(dist(gen));
-    if (pview.versions().empty()) continue;
-    to_query.emplace_back(pview.name);
-  }
-
-  println("=== Query Dependencies Correctness Test ===");
-  println("Testing {} packages with max_depth={}, total {} tests...",
-          opt.trials, opt.max_depth, opt.trials * opt.max_depth);
-  nlohmann::ordered_json result;
-  result["title"] = "Query Dependencies Correctness Test";
-  result["time"] = now_iso8601();
-  result["package_count"] = test_graph.package_count();
-  result["version_count"] = test_graph.version_count();
-  result["dependency_count"] = test_graph.dependency_count();
-  result["test_load"] = !opt.load_dir.empty();
-  result["trials"] = opt.trials;
-  result["max_depth"] = opt.max_depth;
-  result["total_test_count"] = opt.trials * opt.max_depth;
-  result["passed_test_count"] = 0;
-  result["failed_test_count"] = 0;
-  result["failed_tests"] = nlohmann::ordered_json::array();
-
-  std::size_t passed_cnt = 0, tested_cnt = 0;
-  for (auto depth = 1; depth <= opt.max_depth; ++depth) {
-    for (const auto &name : to_query) {
-      auto inmem_result = inmem_graph.query_dependencies_on_buffer(name, "", "", depth);
-      auto disk_result = test_graph.query_dependencies(name, "", "", depth, false);
-      auto gpu_result = test_graph.query_dependencies(name, "", "", depth, true);
-
-      nlohmann::ordered_json failure;
-      failure["package_name"] = name;
-      failure["depth"] = depth;
-      bool succ = compare_result(inmem_result, disk_result, failure, "baseline", "disk");
-      if (succ) succ = compare_result(inmem_result, gpu_result, failure, "baseline", "GPU");
-      if (!opt.load_dir.empty() && succ) {
-        auto load_result = load_graph.query_dependencies(name, "", "", depth, false);
-        succ = compare_result(inmem_result, load_result, failure, "baseline", "loaded");
+  xpg::println("=== XPackageGraph Query Dependencies Correctness Test ===");
+  xpg::println("Testing {} sample packages with depth from 1 to {}...", sample_size, max_depth);
+  std::size_t passed_count = 0, tested_count = 0;
+  for (auto depth = 1; depth <= max_depth; ++depth) {
+    for (const auto &name : samples) {
+      nlohmann::ordered_json jfailed;
+      jfailed["package_name"] = name;
+      jfailed["query_depth"] = depth;
+      jfailed["query_format"] = "flat";
+      auto cpu_flat = std::get<xpg::DependencyFlat>(graph.query_dependencies(name, "", "", depth, false, false));
+      auto gpu_flat = std::get<xpg::DependencyFlat>(graph.query_dependencies(name, "", "", depth, false, true));
+      if (check_result(cpu_flat, gpu_flat, jfailed)) ++passed_count;
+      else {
+        xpg::println("Flat test failed for package: {}, depth={}.", name, depth);
+        jfaileds.emplace_back(std::move(jfailed));
       }
-
-      if (!succ) {
-        println("Test failed for package: {}, depth={}.", name, depth);
-        result["failed_tests"].emplace_back(failure);
-      } else ++passed_cnt;
-      if (++tested_cnt % 100 == 0)
-        println("Progress: {}/{} tests completed. Passed: {}, Failed: {}.",
-                tested_cnt, opt.trials * opt.max_depth, passed_cnt, tested_cnt - passed_cnt);
+      ++tested_count;
+      if (tested_count % 100 == 0)
+        xpg::println("Progress: {}/{} tests completed. Passed: {}, Failed: {}.",
+                     tested_count, sample_size * max_depth, passed_count, tested_count - passed_count);
     }
   }
+  xpg::println("All tests completed. Total: {}, Passed: {}, Failed: {}.",
+               tested_count, passed_count, tested_count - passed_count);
+  xpg::println("=========================================================");
 
-  result["passed_test_count"] = passed_cnt;
-  result["failed_test_count"] = opt.trials * opt.max_depth - passed_cnt;
-  println("All tests completed. Total: {}, Passed: {}, Failed: {}.",
-          opt.trials * opt.max_depth, passed_cnt, opt.trials * opt.max_depth - passed_cnt);
-  println("===========================================");
-
-  std::filesystem::create_directories(std::filesystem::path(opt.output_file).parent_path());
-  if (!opt.output_file.empty()) std::ofstream(opt.output_file) << result.dump(2);
-  println("Cleaning up...");
-  inmem_graph.close();
-  test_graph.close();
-  std::filesystem::remove_all("./temp");
-  return opt.trials * opt.max_depth - passed_cnt > 0;
+  jreport["title"] = "XPackageGraph Query Dependencies Correctness Test";
+  jreport["time"] = xpg::now_iso8601();
+  jreport["repositories"] = config;
+  auto &jdata = jreport["data"];
+  jdata["package_count"] = graph.package_count();
+  jdata["version_count"] = graph.version_count();
+  jdata["dependency_count"] = graph.dependency_count();
+  jdata["load_seconds"] = load_time.count() / 1000.0;
+  jdata["flush_seconds"] = flush_time.count() / 1000.0;
+  jdata["cache_seconds"] = cache_time.count() / 1000.0;
+  jreport["sample_size"] = samples.size();
+  jreport["samples"] = samples;
+  jreport["max_depth"] = max_depth;
+  jreport["total_test_count"] = tested_count;
+  jreport["passed_test_count"] = passed_count;
+  jreport["failed_test_count"] = tested_count - passed_count;
+  jreport["failed_tests"] = std::move(jfaileds);
+  if (!output.empty()) {
+    std::filesystem::create_directories(std::filesystem::path(output).parent_path());
+    std::ofstream(output) << jreport.dump(2);
+  }
+  xpg::println("Cleaning up...");
+  graph.close();
+  std::filesystem::remove_all(temp_directory);
+  return tested_count - passed_count > 0;
 }

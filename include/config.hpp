@@ -39,10 +39,5 @@ inline constexpr double TiBd = 1024 * GiBd;
 inline constexpr ArchitectureId kNullArchitecture = 0;
 inline constexpr ArchitectureId kAnyArchitecture = 1;
 inline constexpr ArchitectureId kAllArchitecture = 2;
-inline constexpr DependencyType kDependsType = 0;
-inline constexpr std::initializer_list<std::string_view> kDefaultArchitectures = {"", "any", "all"};
-inline constexpr std::initializer_list<std::string_view> kDefaultDependencyTypes = {
-  "Depends", "Pre-Depends", "Recommends", "Suggests", "Breaks", "Conflicts", "Provides", "Replaces", "Enhances"
-};
 
 } // namespace xpg

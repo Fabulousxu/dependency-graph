@@ -67,7 +67,7 @@ private:
   mutable TreeId *next_trees_;
   cuda_size_t *next_size_;
   DependencyId *result_;
-  mutable TreeId *result_trees_;
+  TreeId *result_trees_;
   cuda_size_t *result_size_;
   VisitedMark *visited_;
   mutable VisitedMark mark_;

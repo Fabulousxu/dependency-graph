@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,6 +24,11 @@ public:
   std::size_t version_count() const noexcept { return version_nodes_.size(); }
   std::size_t dependency_count() const noexcept { return dependency_edges_.size(); }
   bool empty() const noexcept { return package_nodes_.empty(); }
+
+  PackageView get_package(PackageId pid) const noexcept;
+  VersionView get_version(VersionId vid) const noexcept;
+  DependencyView get_dependency(DependencyId did) const noexcept;
+  std::optional<PackageView> get_package(std::string_view name) const noexcept;
 
   bool create_package(const PackageInfo &info, bool update_if_exists = false);
 

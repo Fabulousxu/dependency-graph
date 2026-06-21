@@ -1,9 +1,9 @@
 #pragma once
+#include <concepts>
 #include <cstddef>
 #include <filesystem>
 #include <initializer_list>
 #include <optional>
-#include <ranges>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -52,8 +52,8 @@ public:
 
   const auto &architectures() const noexcept { return architectures_; }
   const auto &dependency_types() const noexcept { return dependency_types_; }
-  ArchitectureId intern_architecture(std::string_view architecture) noexcept;
-  DependencyType intern_dependency_type(std::string_view dependency_type) noexcept;
+  ArchitectureId intern_architecture(std::string_view architecture);
+  DependencyType intern_dependency_type(std::string_view dependency_type);
 
   PackageView get_package(PackageId pid) const noexcept;
   VersionView get_version(VersionId vid) const noexcept;

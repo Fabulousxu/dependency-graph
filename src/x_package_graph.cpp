@@ -12,11 +12,11 @@ XPackageGraph::XPackageGraph(const std::filesystem::path &directory, open_mode m
   : XPackageGraph(memory_limit, growth_bytes) { open(directory, mode); }
 
 void XPackageGraph::create(const std::filesystem::path &directory) {
-  return storage_graph_.create(directory, kDefaultArchitectures, kDefaultDependencyTypes);
+  storage_graph_.create(directory, kDefaultArchitectures, kDefaultDependencyTypes);
 }
 
 void XPackageGraph::open(const std::filesystem::path &directory, open_mode mode) {
-  return storage_graph_.open(directory, mode, kDefaultArchitectures, kDefaultDependencyTypes);
+  storage_graph_.open(directory, mode, kDefaultArchitectures, kDefaultDependencyTypes);
 }
 
 void XPackageGraph::close() {
@@ -38,6 +38,14 @@ bool XPackageGraph::flush_buffer_if_needed(bool update_if_exists) {
 std::size_t XPackageGraph::estimated_memory_usage() const
   noexcept { return sizeof(XPackageGraph) + buffer_graph_.estimated_memory_usage() - sizeof(BufferGraph); }
 
+ArchitectureId XPackageGraph::intern_architecture(std::string_view architecture) {
+  return storage_graph_.intern_architecture(architecture);
+}
+
+DependencyType XPackageGraph::intern_dependency_type(std::string_view dependency_type) {
+  return storage_graph_.intern_dependency_type(dependency_type);
+}
+
 std::optional<PackageView> XPackageGraph::get_package(std::string_view name) const
   noexcept { return storage_graph_.get_package(name); }
 
@@ -46,28 +54,8 @@ std::vector<std::string_view> XPackageGraph::query_packages(std::string_view arc
   return storage_graph_.query_packages(architecture, prefix);
 }
 
-nlohmann::ordered_json XPackageGraph::query_packages_json(std::string_view architecture, std::string_view prefix,
-                                                          std::size_t limit, std::size_t offset) const {
-  auto result = query_packages(architecture, prefix);
-  auto begin = offset < result.size() ? result.begin() + offset : result.end();
-  if (limit == 0) limit = -1ull;
-  auto count = std::min(limit, static_cast<std::size_t>(result.end() - begin));
-  auto shown = std::ranges::subrange(begin, begin + count);
-  return {
-    {"api_version", "v1"}, {"total", result.size()}, {"shown", shown.size()}, {"offset", offset},
-    {"architecture_filtered", architecture}, {"prefix", prefix}, {"packages", shown}
-  };
-}
-
 std::vector<VersionInfo> XPackageGraph::query_versions(std::string_view name, std::string_view architecture) const {
   return storage_graph_.query_versions(name, architecture);
-}
-
-nlohmann::ordered_json XPackageGraph::query_versions_json(std::string_view name, std::string_view architecture) const {
-  return {
-    {"api_version", "v1"}, {"package", name}, {"architecture_filtered", architecture},
-    {"versions", query_versions(name, architecture)}
-  };
 }
 
 std::variant<DependencyTree, DependencyFlat> XPackageGraph::query_dependencies(
@@ -77,23 +65,6 @@ std::variant<DependencyTree, DependencyFlat> XPackageGraph::query_dependencies(
   if (!use_gpu) return storage_graph_.query_dependencies(name, version, architecture, depth, tree);
   if (!cache_graph_.is_built()) cache_graph_.build();
   return cache_graph_.query_dependencies(name, version, architecture, depth, tree);
-}
-
-nlohmann::ordered_json XPackageGraph::query_dependencies_json(
-  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
-  bool use_gpu) const {
-  auto result = query_dependencies(name, version, architecture, depth, tree, use_gpu);
-  nlohmann::ordered_json json = {
-    {"api_version", "v1"}, {"package", {{"name", name}, {"version", version}, {"architecture", architecture}}},
-    {"max_depth", depth}, {"format", tree ? "tree" : "flat"}, {"use_gpu", use_gpu}
-  };
-  if (tree && depth > 1)
-    json["dependencies"] = {
-      {"single_dependencies", std::get<DependencyTree>(result).single_dependencies},
-      {"alternative_dependencies", std::get<DependencyTree>(result).alternative_dependencies}
-    };
-  else json["dependencies"] = result;
-  return json;
 }
 
 } // namespace xpg

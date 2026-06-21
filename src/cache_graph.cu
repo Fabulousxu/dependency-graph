@@ -1,5 +1,4 @@
 #include "cache_graph.hpp"
-#include <algorithm>
 #include <cuda_runtime.h>
 #include <memory>
 #include <numeric>
@@ -7,6 +6,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include "storage_graph.hpp"
 
 namespace xpg {
@@ -121,12 +121,11 @@ __global__ void expand_tree(const CacheGraph::PackageNode *package_nodes, const 
       result[rpos] = dedge.original;
       result_trees[rpos] = frontier_trees[idx];
     }
-    if (level + 1 < depth && dedge.type == kDependsType && dedge.group == 0) {
+    if (level + 1 < depth) {
       const auto &tpnode = package_nodes[dedge.to_package];
       for (auto vid = tpnode.version_begin; vid < tpnode.version_begin + tpnode.version_count; ++vid) {
         if (visited[vid] == mark) continue;
-        const auto &vnode = version_nodes[vid];
-        if (!StorageGraph::match_architecture(vnode.architecture, dedge.architecture_constraint)) continue;
+        if (!StorageGraph::match_architecture(version_nodes[vid].architecture, dedge.architecture_constraint)) continue;
         auto old = visited[vid];
         if (atomicCAS(&visited[vid], old, mark) != mark) {
           auto npos = atomicAdd(next_size, 1);
@@ -143,8 +142,8 @@ __global__ void expand_tree(const CacheGraph::PackageNode *package_nodes, const 
 DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::string_view version,
                                                  std::string_view architecture, std::size_t depth) const {
   auto frontier = init_frontier(name, version, architecture);
-  if (frontier.empty()) return DependencyTree();
-  std::size_t frontier_size = frontier.size();
+  if (frontier.empty()) return {};
+  cuda_size_t frontier_size = frontier.size();
   struct BuildTreeNode {
     DependencyTree value;
     std::vector<TreeId> single_dependencies;
@@ -177,11 +176,10 @@ DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::str
     std::unordered_map<TreeId, std::unordered_map<VersionId, std::vector<std::vector<TreeId>>>> groupsss;
     for (auto i : std::views::iota(0ull, result_size)) {
       const auto &dedge = storage_graph_.dependency_edges_[result_level[i]];
-      const auto &pnode = storage_graph_.package_nodes_[dedge.to_package];
       auto &groups = groupsss[result_trees[i]][dedge.from_version];
       DependencyTree tree{
-        storage_graph_.string_pool_[pnode.name], storage_graph_.dependency_types_[dedge.type],
-        storage_graph_.string_pool_[dedge.version_constraint],
+        storage_graph_.string_pool_[storage_graph_.package_nodes_[dedge.to_package].name],
+        storage_graph_.dependency_types_[dedge.type], storage_graph_.string_pool_[dedge.version_constraint],
         storage_graph_.architectures_[dedge.architecture_constraint]
       };
       auto tid = static_cast<TreeId>(trees.size());
@@ -203,7 +201,7 @@ DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::str
     }
   }
   auto build_tree = [&](const auto &self, TreeId tid) -> DependencyTree {
-    DependencyTree tree = std::move(trees[tid].value);
+    auto tree = std::move(trees[tid].value);
     for (auto subtid : trees[tid].single_dependencies) tree.single_dependencies.emplace_back(self(self, subtid));
     for (auto group : trees[tid].alternative_dependencies) {
       tree.alternative_dependencies.emplace_back();
@@ -234,12 +232,11 @@ __global__ void expand_flat(const CacheGraph::PackageNode *package_nodes, const 
     const auto &dedge = dependency_edges[did];
     auto pos = atomicAdd(result_size, 1);
     if (pos < kMaxDeviceVectorSize<DependencyId>) result[pos] = dedge.original;
-    if (level + 1 < depth && dedge.type == kDependsType && dedge.group == 0) {
+    if (level + 1 < depth) {
       const auto &pnode = package_nodes[dedge.to_package];
       for (auto vid = pnode.version_begin; vid < pnode.version_begin + pnode.version_count; ++vid) {
         if (visited[vid] == mark) continue;
-        const auto &vnode = version_nodes[vid];
-        if (!StorageGraph::match_architecture(vnode.architecture, dedge.architecture_constraint)) continue;
+        if (!StorageGraph::match_architecture(version_nodes[vid].architecture, dedge.architecture_constraint)) continue;
         auto old = visited[vid];
         if (atomicCAS(&visited[vid], old, mark) != mark) {
           pos = atomicAdd(next_size, 1);
@@ -272,27 +269,26 @@ DependencyFlat CacheGraph::query_dependency_flat(std::string_view name, std::str
     cudaCheck(cudaMemcpy(result_level.data(), result_, result_size * sizeof(DependencyId), cudaMemcpyDeviceToHost));
 
     std::unordered_map<VersionId, std::vector<std::vector<DependencyInfo>>> groupss;
-    std::unordered_set<DependencyInfo> visited_dinfos;
+    std::unordered_set<DependencyInfo> dvisited;
     std::unordered_map<VersionId, std::vector<std::unordered_set<DependencyInfo>>> visited_ginfoss;
     for (auto did : result_level) {
       const auto &dedge = storage_graph_.dependency_edges_[did];
-      const auto &pnode = storage_graph_.package_nodes_[dedge.to_package];
       auto &groups = groupss[dedge.from_version];
-      auto &visited_ginfos = visited_ginfoss[dedge.from_version];
+      auto &gvisited = visited_ginfoss[dedge.from_version];
       DependencyInfo info{
-        storage_graph_.string_pool_[pnode.name], storage_graph_.dependency_types_[dedge.type],
-        storage_graph_.string_pool_[dedge.version_constraint],
+        storage_graph_.string_pool_[storage_graph_.package_nodes_[dedge.to_package].name],
+        storage_graph_.dependency_types_[dedge.type], storage_graph_.string_pool_[dedge.version_constraint],
         storage_graph_.architectures_[dedge.architecture_constraint]
       };
       if (dedge.group > 0) {
         if (dedge.group > groups.size()) {
           groups.resize(dedge.group);
-          visited_ginfos.resize(dedge.group);
+          gvisited.resize(dedge.group);
         }
-        auto [it, succ] = visited_ginfos[dedge.group - 1].emplace(info);
+        auto [it, succ] = gvisited[dedge.group - 1].emplace(info);
         if (succ) groups[dedge.group - 1].emplace_back(std::move(info));
       } else {
-        auto [it, succ] = visited_dinfos.emplace(info);
+        auto [it, succ] = dvisited.emplace(info);
         if (succ) result[level].single_dependencies.emplace_back(std::move(info));
       }
     }
