@@ -1,10 +1,12 @@
 #pragma once
+#include <cstddef>
 #include <functional>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
+#include "config.hpp"
+#include "device_string_view.hpp"
 
 namespace xpg {
 
@@ -50,7 +52,7 @@ struct DependencyInfo {
   std::string_view name;
   std::string_view type;
   std::string_view version_constraint;
-  std::string_view architecture;
+  std::string_view architecture_constraint;
 };
 
 struct DependencyLevel {
@@ -69,11 +71,18 @@ struct PackageInfo {
 };
 
 constexpr bool operator==(const DependencyInfo &l, const DependencyInfo &r) noexcept {
-  return l.name == r.name && l.type == r.type
-    && l.version_constraint == r.version_constraint && l.architecture == r.architecture;
+  return l.name == r.name && l.type == r.type && l.version_constraint == r.version_constraint
+    && l.architecture_constraint == r.architecture_constraint;
 }
 
-} // namespace xp
+constexpr HOST_DEVICE bool filter_architecture(ArchitectureId target, ArchitectureId constraint) noexcept {
+  if (constraint == kAnyArchitecture) return true;
+  return target == kAllArchitecture || target == kNoarchArchitecture || target == constraint;
+}
+
+HOST_DEVICE bool filter_version(device_string_view target, device_string_view constraint) noexcept;
+
+} // namespace xpg
 
 template <>
 struct std::hash<xpg::DependencyInfo> {
@@ -82,7 +91,7 @@ struct std::hash<xpg::DependencyInfo> {
     auto seed = h(item.name);
     seed ^= h(item.type) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
     seed ^= h(item.version_constraint) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
-    seed ^= h(item.architecture) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+    seed ^= h(item.architecture_constraint) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
     return seed;
   }
 };

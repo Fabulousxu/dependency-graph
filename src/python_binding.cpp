@@ -10,7 +10,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl/filesystem.h>
-#include "x_package_graph.hpp"
+#include "xpgraph.hpp"
 
 namespace py = pybind11;
 
@@ -59,7 +59,7 @@ public:
     d["name"] = info.name;
     d["type"] = info.type;
     d["version_constraint"] = info.version_constraint;
-    d["architecture"] = info.architecture;
+    d["architecture"] = info.architecture_constraint;
     return d.release();
   }
 };
@@ -80,10 +80,10 @@ public:
   }
 };
 
-class PyXPackageGraph {
+class PyXPGraph {
 public:
-  PyXPackageGraph(const std::filesystem::path &data_directory, std::string_view open_mode = "load-or-create",
-                  std::size_t memory_limit = -1ull, std::size_t growth_bytes = xpg::kDefaultGrowthBytes)
+  PyXPGraph(const std::filesystem::path &data_directory, std::string_view open_mode = "load-or-create",
+            std::size_t memory_limit = -1ull, std::size_t growth_bytes = xpg::kDefaultGrowthBytes)
     : graph_(data_directory, parse_open_mode(open_mode), memory_limit, growth_bytes) {}
 
   void load(const std::filesystem::path &directory) { graph_.load(directory); }
@@ -137,8 +137,11 @@ public:
   }
 
   py::dict query_dependencies(std::string_view name, std::string_view version = "", std::string_view architecture = "",
-                              std::size_t depth = 1, bool tree = true, bool use_gpu = false) const {
-    auto result = graph_.query_dependencies(name, version, architecture, depth, tree, use_gpu);
+                              std::size_t depth = 1, bool tree = true, bool use_gpu = false,
+                              bool filter_architecture = true, bool filter_version = true,
+                              bool expand_alternative = true) const {
+    auto result = graph_.query_dependencies(name, version, architecture, depth, tree, use_gpu, filter_architecture,
+                                            filter_version, expand_alternative);
     if (!tree || depth == 1) return py::cast(result);
     py::dict d;
     d["single_dependencies"] = std::get<xpg::DependencyTree>(result).single_dependencies;
@@ -147,40 +150,41 @@ public:
   }
 
 private:
-  xpg::XPackageGraph graph_;
+  xpg::XPGraph graph_;
 };
 
-PYBIND11_MODULE(pyxpackagegraph, m) {
-  m.doc() = "Python binding for XPackageGraph query APIs";
+PYBIND11_MODULE(pyxpgraph, m) {
+  m.doc() = "Python binding for XPGraph query APIs";
 
-  py::class_<PyXPackageGraph>(m, "XPackageGraph")
+  py::class_<PyXPGraph>(m, "XPGraph")
     .def(py::init<const std::filesystem::path &, std::string_view, std::size_t, std::size_t>(),
          py::arg("data_directory"), py::arg("open_mode") = "load-or-create", py::arg("memory_limit") = -1ull,
          py::arg("growth_bytes") = xpg::kDefaultGrowthBytes)
-    .def("load", &PyXPackageGraph::load, py::arg("directory"))
-    .def("create", &PyXPackageGraph::create, py::arg("directory"))
-    .def("open", &PyXPackageGraph::open, py::arg("directory"), py::arg("open_mode") = "load-or-create")
-    .def("sync", &PyXPackageGraph::sync)
-    .def("close", &PyXPackageGraph::close)
-    .def("is_open", &PyXPackageGraph::is_open)
-    .def("growth_bytes", &PyXPackageGraph::growth_bytes)
-    .def("set_growth_bytes", &PyXPackageGraph::set_growth_bytes, py::arg("growth_bytes"))
-    .def("memory_limit", &PyXPackageGraph::memory_limit)
-    .def("set_memory_limit", &PyXPackageGraph::set_memory_limit, py::arg("memory_limit"))
-    .def("package_count", &PyXPackageGraph::package_count)
-    .def("version_count", &PyXPackageGraph::version_count)
-    .def("dependency_count", &PyXPackageGraph::dependency_count)
-    .def("architectures", &PyXPackageGraph::architectures)
-    .def("dependency_types", &PyXPackageGraph::dependency_types)
-    .def("estimated_memory_usage", &PyXPackageGraph::estimated_memory_usage)
-    .def("flush_buffer", &PyXPackageGraph::flush_buffer, py::arg("update_if_exists") = false)
-    .def("flush_buffer_if_needed", &PyXPackageGraph::flush_buffer_if_needed, py::arg("update_if_exists") = false)
-    .def("build_cache", &PyXPackageGraph::build_cache)
-    .def("clear_cache", &PyXPackageGraph::clear_cache)
-    .def("compact", &PyXPackageGraph::compact)
-    .def("query_packages", &PyXPackageGraph::query_packages, py::arg("limit") = 0, py::arg("offset") = 0,
+    .def("load", &PyXPGraph::load, py::arg("directory"))
+    .def("create", &PyXPGraph::create, py::arg("directory"))
+    .def("open", &PyXPGraph::open, py::arg("directory"), py::arg("open_mode") = "load-or-create")
+    .def("sync", &PyXPGraph::sync)
+    .def("close", &PyXPGraph::close)
+    .def("is_open", &PyXPGraph::is_open)
+    .def("growth_bytes", &PyXPGraph::growth_bytes)
+    .def("set_growth_bytes", &PyXPGraph::set_growth_bytes, py::arg("growth_bytes"))
+    .def("memory_limit", &PyXPGraph::memory_limit)
+    .def("set_memory_limit", &PyXPGraph::set_memory_limit, py::arg("memory_limit"))
+    .def("package_count", &PyXPGraph::package_count)
+    .def("version_count", &PyXPGraph::version_count)
+    .def("dependency_count", &PyXPGraph::dependency_count)
+    .def("architectures", &PyXPGraph::architectures)
+    .def("dependency_types", &PyXPGraph::dependency_types)
+    .def("estimated_memory_usage", &PyXPGraph::estimated_memory_usage)
+    .def("flush_buffer", &PyXPGraph::flush_buffer, py::arg("update_if_exists") = false)
+    .def("flush_buffer_if_needed", &PyXPGraph::flush_buffer_if_needed, py::arg("update_if_exists") = false)
+    .def("build_cache", &PyXPGraph::build_cache)
+    .def("clear_cache", &PyXPGraph::clear_cache)
+    .def("compact", &PyXPGraph::compact)
+    .def("query_packages", &PyXPGraph::query_packages, py::arg("limit") = 0, py::arg("offset") = 0,
          py::arg("architecture") = "", py::arg("prefix") = "")
-    .def("query_versions", &PyXPackageGraph::query_versions, py::arg("name"), py::arg("architecture") = "")
-    .def("query_dependencies", &PyXPackageGraph::query_dependencies, py::arg("name"), py::arg("version") = "",
-         py::arg("architecture") = "", py::arg("depth") = 1, py::arg("tree") = true, py::arg("use_gpu") = false);
+    .def("query_versions", &PyXPGraph::query_versions, py::arg("name"), py::arg("architecture") = "")
+    .def("query_dependencies", &PyXPGraph::query_dependencies, py::arg("name"), py::arg("version") = "",
+         py::arg("architecture") = "", py::arg("depth") = 1, py::arg("tree") = true, py::arg("use_gpu") = false,
+         py::arg("filter_architecture") = true, py::arg("filter_version") = true, py::arg("expand_alternative") = true);
 }

@@ -25,6 +25,8 @@ public:
 
   struct VersionNode {
     ArchitectureId architecture;
+    StringOffset version_offset;
+    StringLength version_length;
     DependencyCount dependency_count;
     DependencyId dependency_begin;
   };
@@ -32,6 +34,8 @@ public:
   struct DependencyEdge {
     DependencyId original;
     PackageId to_package;
+    StringOffset version_constraint_offset;
+    StringLength version_constraint_length;
     ArchitectureId architecture_constraint;
     DependencyType type;
     GroupId group;
@@ -49,11 +53,14 @@ public:
   bool is_built() const noexcept { return frontier_ != nullptr; }
 
   std::variant<DependencyTree, DependencyFlat> query_dependencies(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
   DependencyTree query_dependency_tree(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
   DependencyFlat query_dependency_flat(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
 
 private:
   const StorageGraph &storage_graph_;
@@ -61,6 +68,7 @@ private:
   PackageNode *package_nodes_;
   VersionNode *version_nodes_;
   DependencyEdge *dependency_edges_;
+  char *string_pool_;
   mutable VersionId *frontier_;
   mutable TreeId *frontier_trees_;
   mutable VersionId *next_;

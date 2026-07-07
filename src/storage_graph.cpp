@@ -35,7 +35,7 @@ void StorageGraph::load(const std::filesystem::path &directory) {
     || control().version_count != version_nodes_.size()
     || control().dependency_count != dependency_edges_.size()
     || control().string_pool_size != string_pool_.size_bytes())
-    throw std::runtime_error(std::format("Directory '{}' is not a valid XPackageGraph.", directory.string()));
+    throw std::runtime_error(std::format("Directory '{}' is not a valid XPGraph.", directory.string()));
   for (PackageId pid = 0; pid < package_nodes_.size(); ++pid)
     name_to_package_id_.emplace(package_nodes_[pid].name, pid);
 }
@@ -168,7 +168,7 @@ bool StorageGraph::create_package(const PackageInfo &info, bool update_if_exists
   auto dcount = static_cast<DependencyCount>(0);
   auto create_dependency_edge_from_info = [this, vid, &dcount](const DependencyInfo &info, GroupId group) {
     auto [pid, pcuss] = create_package_node(info.name);
-    auto arch = intern_architecture(info.architecture);
+    auto arch = intern_architecture(info.architecture_constraint);
     auto type = intern_dependency_type(info.type);
     auto [did, dcuss] = create_dependency_edge(vid, pid, info.version_constraint, arch, type, group);
     if (dcuss) ++dcount;
@@ -323,7 +323,8 @@ std::vector<std::string_view> StorageGraph::query_packages(std::string_view arch
     for_each_version(pnode, [&, arch](const VersionNode &vnode) {
       if (match) return;
       // if (!architecture.empty() && vnode.architecture != arch) return;
-      if (!architecture.empty() && vnode.architecture != arch && vnode.architecture != kAllArchitecture) return;
+      if (!architecture.empty() && vnode.architecture != arch && vnode.architecture != kAllArchitecture
+        && vnode.architecture != kNoarchArchitecture) { return; }
       match = true;
     });
     if (match) result.emplace_back(name);
@@ -339,16 +340,21 @@ std::vector<VersionInfo> StorageGraph::query_versions(std::string_view name, std
   auto arch = architecture.empty() ? kNullArchitecture : architectures_.id(architecture).value_or(kNullArchitecture);
   for_each_version(it->second, [&, this](const VersionNode &vnode) {
     // if (!architecture.empty() && vnode.architecture != arch) return;
-    if (!architecture.empty() && vnode.architecture != arch && vnode.architecture != kAllArchitecture) return;
+    if (!architecture.empty() && vnode.architecture != arch && vnode.architecture != kAllArchitecture
+      && vnode.architecture != kNoarchArchitecture) { return; }
     versions.push_back({string_pool_[vnode.version], architectures_[vnode.architecture]});
   });
   return versions;
 }
 
 std::variant<DependencyTree, DependencyFlat> StorageGraph::query_dependencies(
-  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const {
-  if (tree) return query_dependency_tree(name, version, architecture, depth);
-  return query_dependency_flat(name, version, architecture, depth);
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
+  bool filter_architecture, bool filter_version, bool expand_alternative) const {
+  if (tree)
+    return query_dependency_tree(name, version, architecture, depth, filter_architecture, filter_version,
+                                 expand_alternative);
+  return query_dependency_flat(name, version, architecture, depth, filter_architecture, filter_version,
+                               expand_alternative);
 }
 
 std::vector<VersionId> StorageGraph::init_frontier(std::string_view name, std::string_view version,
@@ -359,14 +365,16 @@ std::vector<VersionId> StorageGraph::init_frontier(std::string_view name, std::s
   auto arch = architecture.empty() ? kNullArchitecture : architectures_.id(architecture).value_or(kNullArchitecture);
   for_each_version(it->second, [&, this](VersionId vid, const VersionNode &vnode) {
     if (!version.empty() && string_pool_[vnode.version] != version) return;
-    if (!architecture.empty() && vnode.architecture != arch && vnode.architecture != kAllArchitecture) return;
+    if (!architecture.empty() && vnode.architecture != arch && vnode.architecture != kAllArchitecture
+      && vnode.architecture != kNoarchArchitecture) { return; }
     frontier.emplace_back(vid);
   });
   return frontier;
 }
 
-DependencyTree StorageGraph::query_dependency_tree(std::string_view name, std::string_view version,
-                                                   std::string_view architecture, std::size_t depth) const {
+DependencyTree StorageGraph::query_dependency_tree(
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+  bool filter_architecture, bool filter_version, bool expand_alternative) const {
   DependencyTree result{name, "", version, architecture};
   auto frontier = init_frontier(name, version, architecture);
   std::unordered_set visited(frontier.begin(), frontier.end());
@@ -377,10 +385,13 @@ DependencyTree StorageGraph::query_dependency_tree(std::string_view name, std::s
         string_pool_[package_nodes_[dedge.to_package].name], dependency_types_[dedge.type],
         string_pool_[dedge.version_constraint], architectures_[dedge.architecture_constraint]
       };
-      if (level + 1 < depth)
+      if (level + 1 < depth && (expand_alternative || dedge.group == 0))
         for_each_version(package_nodes_[dedge.to_package], [&, level](VersionId vid, const VersionNode &vnode) {
           if (visited.contains(vid)) return;
-          if (!match_architecture(vnode.architecture, dedge.architecture_constraint)) return;
+          if (filter_architecture && !xpg::filter_architecture(vnode.architecture, dedge.architecture_constraint))
+            return;
+          if (filter_version &&
+            !xpg::filter_version(string_pool_[vnode.version], string_pool_[dedge.version_constraint])) { return; }
           visited.insert(vid);
           self(self, vid, subtree, level + 1);
         });
@@ -394,12 +405,13 @@ DependencyTree StorageGraph::query_dependency_tree(std::string_view name, std::s
   return result;
 }
 
-DependencyFlat StorageGraph::query_dependency_flat(std::string_view name, std::string_view version,
-                                                   std::string_view architecture, std::size_t depth) const {
+DependencyFlat StorageGraph::query_dependency_flat(
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+  bool filter_architecture, bool filter_version, bool expand_alternative) const {
   DependencyFlat result(depth);
   auto frontier = init_frontier(name, version, architecture);
   std::unordered_set visited(frontier.begin(), frontier.end());
-  for (auto level = 0; level < depth; ++level) {
+  for (auto level : std::views::iota(0ull, depth)) {
     std::vector<VersionId> next;
     std::unordered_set<DependencyInfo> dvisited;
     for (auto vid : frontier) {
@@ -421,10 +433,13 @@ DependencyFlat StorageGraph::query_dependency_flat(std::string_view name, std::s
           auto [it, succ] = dvisited.emplace(info);
           if (succ) result[level].single_dependencies.emplace_back(std::move(info));
         }
-        if (level + 1 < depth)
+        if (level + 1 < depth && (expand_alternative || dedge.group == 0))
           for_each_version(package_nodes_[dedge.to_package], [&](VersionId vid, const VersionNode &vnode) {
             if (visited.contains(vid)) return;
-            if (!match_architecture(vnode.architecture, dedge.architecture_constraint)) return;
+            if (filter_architecture && !xpg::filter_architecture(vnode.architecture, dedge.architecture_constraint))
+              return;
+            if (filter_version &&
+              !xpg::filter_version(string_pool_[vnode.version], string_pool_[dedge.version_constraint])) { return; }
             next.emplace_back(vid);
             visited.emplace(vid);
           });

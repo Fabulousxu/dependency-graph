@@ -105,10 +105,10 @@ public:
 
   pointer data() noexcept { return reinterpret_cast<pointer>(mmap_.data() + sizeof(header_t)); }
   const_pointer data() const noexcept { return reinterpret_cast<const_pointer>(mmap_.data() + sizeof(header_t)); }
-  reference operator[](size_type index) noexcept { return data()[index]; }
-  const_reference operator[](size_type index) const noexcept { return data()[index]; }
-  reference at(size_type index) noexcept { return (*this)[index]; }
-  const_reference at(size_type index) const noexcept { return (*this)[index]; }
+  reference operator[](size_type pos) noexcept { return data()[pos]; }
+  const_reference operator[](size_type pos) const noexcept { return data()[pos]; }
+  reference at(size_type pos) noexcept { return (*this)[pos]; }
+  const_reference at(size_type pos) const noexcept { return (*this)[pos]; }
   reference front() noexcept { return (*this)[0]; }
   const_reference front() const noexcept { return (*this)[0]; }
   reference back() noexcept { return (*this)[size() - 1]; }

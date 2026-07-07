@@ -27,7 +27,7 @@ void to_json(Json &j, const DependencyInfo &info) {
   j["name"] = info.name;
   j["type"] = info.type;
   j["version_constraint"] = info.version_constraint;
-  j["architecture"] = info.architecture;
+  j["architecture"] = info.architecture_constraint;
 }
 
 template <class Json>
@@ -52,7 +52,9 @@ void to_json(Json &j, const std::variant<DependencyTree, DependencyFlat> &result
 template <class Json>
 void to_json(Json &j, const RepositoryInfo &info) {
   j["enabled"] = info.enabled;
-  j["url"] = info.url;
+  if (info.type == kDEB) j["type"] = "DEB";
+  else if (info.type == kRPM) j["type"] = "RPM";
+  j["urls"] = info.urls;
   j["distributions"] = info.distributions;
   j["architectures"] = info.architectures;
 }
@@ -60,7 +62,10 @@ void to_json(Json &j, const RepositoryInfo &info) {
 template <class Json>
 void from_json(const Json &j, RepositoryInfo &info) {
   info.enabled = j.value("enabled", true);
-  info.url = j.value("url", decltype(info.url){});
+  auto type = j.value("type", std::string("DEB"));
+  if (type == "DEB" || type == "deb") info.type = kDEB;
+  else if (type == "RPM" || type == "rpm") info.type = kRPM;
+  info.urls = j.value("urls", decltype(info.urls){});
   info.distributions = j.value("distributions", decltype(info.distributions){});
   info.architectures = j.value("architectures", decltype(info.architectures){});
 }

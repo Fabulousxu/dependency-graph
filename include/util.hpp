@@ -14,6 +14,18 @@
 
 namespace xpg {
 
+constexpr std::string_view trim_prefix(std::string_view str) noexcept {
+  auto first = str.find_first_not_of(" \t\n\r\f\v");
+  return first == std::string_view::npos ? str.substr(str.size()) : str.substr(first);
+}
+
+constexpr std::string_view trim_suffix(std::string_view str) noexcept {
+  auto last = str.find_last_not_of(" \t\n\r\f\v");
+  return last == std::string_view::npos ? str.substr(0, 0) : str.substr(0, last + 1);
+}
+
+constexpr std::string_view trim(std::string_view str) noexcept { return trim_suffix(trim_prefix(str)); }
+
 template <class CharT, class Traits = std::char_traits<CharT>>
 struct basic_string_hash {
   using is_transparent = void;

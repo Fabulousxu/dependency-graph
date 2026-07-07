@@ -4,7 +4,8 @@
   "repositories": {
     "debian": {
       "enabled": true,
-      "url": [
+      "type": "DEB",
+      "urls": [
         "https://deb.debian.org/debian",
         "https://archive.debian.org/debian",
         "https://mirror.sjtu.edu.cn/debian"
@@ -252,6 +253,9 @@
     "xwallpaper"
   ],
   "max_depth": 10,
+  "filter_architecture": true,
+  "filter_version": false,
+  "expand_alternative": true,
   "latency_milliseconds": {
     "cpu": {
       "tree_query": {

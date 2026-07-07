@@ -4,16 +4,10 @@
 
 namespace xpg {
 
-#ifdef __CUDACC__
-#define HOST_DEVICE __host__ __device__
-#else
-#define HOST_DEVICE
-#endif
-
 class StorageGraph;
 class BufferGraph;
 class CacheGraph;
-class XPackageGraph;
+class XPGraph;
 class PackageLoader;
 
 using PackageId = std::uint32_t;
@@ -39,5 +33,6 @@ inline constexpr double TiBd = 1024 * GiBd;
 inline constexpr ArchitectureId kNullArchitecture = 0;
 inline constexpr ArchitectureId kAnyArchitecture = 1;
 inline constexpr ArchitectureId kAllArchitecture = 2;
+inline constexpr ArchitectureId kNoarchArchitecture = 3;
 
 } // namespace xpg

@@ -37,11 +37,14 @@ public:
   void flush(bool update_if_exists = false);
 
   std::variant<DependencyTree, DependencyFlat> query_dependencies(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
   DependencyTree query_dependency_tree(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
   DependencyFlat query_dependency_flat(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
 
 private:
   struct PackageNode {

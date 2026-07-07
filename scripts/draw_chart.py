@@ -1,160 +1,241 @@
+#!/usr/bin/env python3
+import argparse
 import json
 import re
 from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator
-import matplotlib.font_manager as fm
+from matplotlib.ticker import LogLocator, NullFormatter, StrMethodFormatter
 
-preferred_fonts = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "Noto Sans CJK SC", "WenQuanYi Zen Hei"]
-available_font_names = {f.name for f in fm.fontManager.ttflist}
-for pf in preferred_fonts:
-    if pf in available_font_names:
-        plt.rcParams["font.sans-serif"] = [pf]
-        break
-else:
-    print("[warn] No preferred Chinese font found on the system. Chinese labels may not render correctly.")
-plt.rcParams['axes.unicode_minus'] = False
-
-series_keys = {
-    # "内存存储，CPU查询": "in_memory_results",
-    # "持久化存储，CPU查询": "disk_results",
-    # "持久化存储，GPU加速查询": "gpu_results",
-    # "持久化存储，冷启动，CPU查询": "loaded_results",
-    "DepGraphX-CPU": "disk_results",
-    "DepGraphX-GPU": "gpu_results",
-    "DepGraphX-Non-rearrange-CPU": "in_memory_results",
+ENGINE_LABELS = {
+    "cpu": "XPGraph-CPU",
+    "gpu": "XPGraph-GPU",
+    "uncompacted": "XPGraph-Uncompacted",
+    "memgraph": "Memgraph",
+    "xpgraph_cpu": "XPGraph-CPU",
+    "xpgraph_gpu": "XPGraph-GPU",
 }
 
+ENGINE_MARKERS = {
+    "cpu": "o",
+    "gpu": "s",
+    "uncompacted": "^",
+    "memgraph": "D",
+    "xpgraph_cpu": "o",
+    "xpgraph_gpu": "s",
+}
 
-output_type = "png"
-SUPPORTED_OUTPUT_TYPES = {"png", "svg", "pdf"}
+QUERY_KEYS = {
+    "tree": "tree_query",
+    "flat": "flat_query",
+}
+
+QUERY_LABELS = {
+    "tree_query": "Tree query",
+    "flat_query": "Flat query",
+}
+
+SUPPORTED_FORMATS = {"png", "pdf", "svg"}
+
+TITLE_FONT_SIZE = 18
+LABEL_FONT_SIZE = 16
+TICK_FONT_SIZE = 14
+LEGEND_FONT_SIZE = 14
 
 
-def to_number(value):
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        match = re.search(r"-?\d+(?:\.\d+)?", value)
-        if match:
-            return float(match.group(0))
-    return None
+def module_root():
+    return Path(__file__).resolve().parents[1]
 
 
-def extract_series_points(records, latency_key):
+def split_csv(values):
+    items = []
+    for value in values:
+        items.extend(part.strip() for part in value.split(","))
+    return [item for item in items if item]
+
+
+def parse_depth(label):
+    match = re.search(r"\d+", label)
+    if not match:
+        raise ValueError(f"Cannot parse depth from {label!r}")
+    return int(match.group(0))
+
+
+def report_name_part(json_path):
+    return json_path.stem.removesuffix("_report")
+
+
+def iter_input_files(input_path):
+    if input_path.is_dir():
+        return sorted(input_path.glob("*.json"))
+    if input_path.is_file():
+        return [input_path]
+    raise FileNotFoundError(f"Input path does not exist: {input_path}")
+
+
+def ordered_engines(latency_data):
+    preferred = ["memgraph", "cpu", "gpu", "uncompacted", "xpgraph_cpu", "xpgraph_gpu"]
+    engines = [engine for engine in preferred if engine in latency_data]
+    engines.extend(engine for engine in latency_data if engine not in engines)
+    return engines
+
+
+def collect_points(latency_data, engine, query_key, metric):
     points = []
-    for item in records or []:
-        depth = to_number(item.get("depth"))
-        latency = to_number(item.get(latency_key))
-        if depth is None or latency is None:
+    for depth_label, values in latency_data.get(engine, {}).get(query_key, {}).items():
+        value = values.get(metric)
+        if value is None:
             continue
-        points.append((depth, latency))
-    points.sort(key=lambda x: x[0])
-    return points
+        points.append((parse_depth(depth_label), float(value)))
+    return sorted(points)
 
 
-def normalize_output_path(output_path, output_type):
-    if output_path is None:
-        return None
-    output_type = (output_type or "").lstrip(".").lower()
-    if output_type not in SUPPORTED_OUTPUT_TYPES:
-        raise ValueError(
-            f"Unsupported output_type '{output_type}'. Supported: {sorted(SUPPORTED_OUTPUT_TYPES)}"
-        )
-    output_path = Path(output_path)
-    return output_path.with_suffix(f".{output_type}")
+def draw_chart(report, json_path, query_name, metric, output_path, log_scale):
+    query_key = QUERY_KEYS[query_name]
+    latency_data = report.get("latency_milliseconds", {})
+    engines = ordered_engines(latency_data)
 
+    fig, ax = plt.subplots(figsize=(9.8, 6.4))
+    found = False
+    all_depths = set()
 
-def draw_chart(json_path, latency_key="avg", title="", output_path=None, output_type=output_type):
-    json_path = Path(json_path)
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    found_any = False
-    plt.figure(figsize=(10, 6))
-
-    for label, result_key in series_keys.items():
-        points = extract_series_points(data.get(result_key), latency_key)
+    for engine in engines:
+        points = collect_points(latency_data, engine, query_key, metric)
+        points = [(depth, value) for depth, value in points if value > 0]
         if not points:
-            print(f"[warn] No valid points for '{label}' with metric '{latency_key}'.")
             continue
-        depths = [p[0] for p in points]
-        latencies = [p[1] for p in points]
-        plt.plot(depths, latencies, marker="o", linewidth=2, label=label)
-        found_any = True
 
-    if not found_any:
-        raise ValueError(f"No plottable data found in {json_path} for latency_key='{latency_key}'.")
+        depths = [depth for depth, _ in points]
+        values = [value for _, value in points]
+        all_depths.update(depths)
+        ax.plot(
+            depths,
+            values,
+            marker=ENGINE_MARKERS.get(engine, "o"),
+            linewidth=2,
+            markersize=5,
+            label=ENGINE_LABELS.get(engine, engine),
+        )
+        found = True
 
-    # plt.title(title, fontsize=20)
-    # plt.xlabel("depth", fontsize=20)
-    ax = plt.gca()
-    ax.xaxis.set_major_locator(MultipleLocator(1))
-    ax.tick_params(axis="both", labelsize=24)
-    plt.xlabel("查询深度", fontsize=24)
-    plt.ylabel("平均查询时延（毫秒）", fontsize=24)
-    plt.grid(True, linestyle="--", alpha=0.4)
-    plt.legend(fontsize=20, loc="upper left")
-    plt.tight_layout()
+    if not found:
+        plt.close(fig)
+        raise ValueError(f"No data for query={query_name!r}, metric={metric!r} in {json_path}")
 
-    if output_path is not None:
-        output_path = normalize_output_path(output_path, output_type)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        # dpi only affects raster output (png); harmless for vector formats
-        plt.savefig(output_path, dpi=300)
-        print(f"Saved chart to: {output_path}")
+    ax.set_title(
+        f"{report.get('title') or json_path.stem}\n"
+        f"{QUERY_LABELS[query_key]} - {metric} latency",
+        fontsize=TITLE_FONT_SIZE,
+    )
+    ax.set_xlabel("Dependency depth", fontsize=LABEL_FONT_SIZE)
+    ax.set_ylabel(f"{metric} latency (ms)", fontsize=LABEL_FONT_SIZE)
+    ax.set_xticks(sorted(all_depths))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+    ax.tick_params(axis="both", labelsize=TICK_FONT_SIZE)
+    if log_scale:
+        ax.set_yscale("log")
+        ax.yaxis.set_major_locator(LogLocator(base=10))
+        ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.grid(True, which="both", linestyle="--", linewidth=0.7, alpha=0.4)
+    ax.legend(fontsize=LEGEND_FONT_SIZE)
+    fig.tight_layout()
 
-    # plt.show()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
 
 
+def plot_report(json_path, output_dir, metrics, queries, formats, log_scale):
+    with json_path.open("r", encoding="utf-8") as f:
+        report = json.load(f)
+
+    if "latency_milliseconds" not in report:
+        raise ValueError(f"No latency_milliseconds data found in {json_path}")
+
+    output_paths = []
+    scale_suffix = "_log" if log_scale else ""
+    for query_name in queries:
+        for metric in metrics:
+            for output_format in formats:
+                output_path = (
+                        output_dir
+                        / f"{report_name_part(json_path)}_{query_name}_{metric}{scale_suffix}.{output_format}"
+                )
+                draw_chart(report, json_path, query_name, metric, output_path, log_scale)
+                output_paths.append(output_path)
+    return output_paths
+
+
+def parse_args():
+    root = module_root()
+    parser = argparse.ArgumentParser(description="Plot XPGraph benchmark report JSON files.")
+    parser.add_argument(
+        "-i",
+        "--input",
+        type=Path,
+        default=root / "reports" / "benchmarks",
+        help="Input benchmark JSON file or directory. Defaults to reports/benchmarks.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=root / "reports" / "figures",
+        help="Output directory. Defaults to reports/figures.",
+    )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=["avg"],
+        help="Metrics to plot, e.g. avg or avg,p50,p95. Defaults to avg.",
+    )
+    parser.add_argument(
+        "--queries",
+        nargs="+",
+        default=["tree", "flat"],
+        help="Queries to plot: tree, flat, or tree,flat. Defaults to both.",
+    )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        default=["svg"],
+        help="Output formats: png, pdf, svg, or png,svg. Defaults to svg.",
+    )
+    parser.add_argument(
+        "--log-scale",
+        action="store_true",
+        help="Use a logarithmic Y axis. Defaults to a linear Y axis.",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    metrics = split_csv(args.metrics)
+    queries = split_csv(args.queries)
+    formats = [item.lower() for item in split_csv(args.formats)]
+
+    unknown_queries = sorted(set(queries) - set(QUERY_KEYS))
+    if unknown_queries:
+        raise SystemExit(f"Unsupported queries: {unknown_queries}. Supported: {sorted(QUERY_KEYS)}")
+
+    unknown_formats = sorted(set(formats) - SUPPORTED_FORMATS)
+    if unknown_formats:
+        raise SystemExit(f"Unsupported formats: {unknown_formats}. Supported: {sorted(SUPPORTED_FORMATS)}")
+
+    input_files = iter_input_files(args.input)
+    if not input_files:
+        raise SystemExit(f"No JSON files found in {args.input}")
+
+    for json_path in input_files:
+        for output_path in plot_report(json_path, args.output_dir, metrics, queries, formats, args.log_scale):
+            print(output_path)
 
 
 if __name__ == "__main__":
-    draw_chart("../results/query_dependencies_benchmark_50_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b.pdf")
-    draw_chart("../results/query_dependencies_benchmark_100_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c.pdf")
-    draw_chart("../results/query_dependencies_benchmark_200_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d.pdf")
-    draw_chart("../results/query_dependencies_benchmark_388_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset E",
-               "../docs/figures/query_dependencies_benchmark_dataset_e.pdf")
-
-    draw_chart("../results/query_dependencies_benchmark_50_memory_256m_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b_memory_256m.pdf")
-    draw_chart("../results/query_dependencies_benchmark_100_memory_256m_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c_memory_256m.pdf")
-    draw_chart("../results/query_dependencies_benchmark_200_memory_256m_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d_memory_256m.pdf")
-
-    series_keys = {
-        "CPU": "disk_results",
-        "GPU": "gpu_results",
-    }
-
-    draw_chart("../results/query_dependencies_benchmark_50_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset B",
-               "../docs/figures/query_dependencies_benchmark_dataset_b_gpu_only.pdf")
-    draw_chart("../results/query_dependencies_benchmark_100_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset C",
-               "../docs/figures/query_dependencies_benchmark_dataset_c_gpu_only.pdf")
-    draw_chart("../results/query_dependencies_benchmark_200_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset D",
-               "../docs/figures/query_dependencies_benchmark_dataset_d_gpu_only.pdf")
-    draw_chart("../results/query_dependencies_benchmark_388_result.json", "avg",
-               "Query Dependencies Benchmark (Mean Latency)\nNo Memory Limit, Dataset E",
-               "../docs/figures/query_dependencies_benchmark_dataset_e_gpu_only.pdf")
-
-    # draw_chart("../results/query_dependencies_benchmark_50_memory_256m_result.json", "avg",
-    #            "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset B",
-    #            "../docs/figures/query_dependencies_benchmark_dataset_b_memory_256m_gpu_only.pdf")
-    # draw_chart("../results/query_dependencies_benchmark_100_memory_256m_result.json", "avg",
-    #            "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset C",
-    #            "../docs/figures/query_dependencies_benchmark_dataset_c_memory_256m_gpu_only.pdf")
-    # draw_chart("../results/query_dependencies_benchmark_200_memory_256m_result.json", "avg",
-    #            "Query Dependencies Benchmark (Mean Latency)\nMemory Limit 256MB, Dataset D",
-    #            "../docs/figures/query_dependencies_benchmark_dataset_d_memory_256m_gpu_only.pdf")
+    main()

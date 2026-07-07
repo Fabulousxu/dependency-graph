@@ -1,51 +1,48 @@
-#include <vector>
+#include <chrono>
+#include <cstddef>
+#include <filesystem>
+#include <random>
+#include <string>
 #include <CLI/CLI11.hpp>
-#include "dependency_graph.hpp"
-#include "util.hpp"
+#include "xpgraph.hpp"
 
 struct Option {
-  std::string load_dir;
-  std::size_t trials;
+  std::filesystem::path data_directory;
+  std::size_t test_time;
   std::size_t depth;
+  std::string format;
   bool use_gpu;
 };
 
+Option parse_args(int argc, char **argv) {
+  Option option;
+  CLI::App app("XPGraph query dependencies profile");
+  app.add_option("--data-directory", option.data_directory, "XPGraph data directory")
+     ->required()->check(CLI::ExistingDirectory);
+  app.add_option("--test-time", option.test_time, "Profile duration in seconds")
+     ->required()->check(CLI::PositiveNumber);
+  app.add_option("--depth", option.depth, "Dependency query depth")->required()->check(CLI::PositiveNumber);
+  app.add_option("--format", option.format, "Query result format")->required()->check(CLI::IsMember({"tree", "flat"}));
+  app.add_flag("--use-gpu", option.use_gpu, "Use GPU accelerated query");
+  try { app.parse(argc, argv); } catch (const CLI::ParseError &exc) { std::exit(app.exit(exc)); }
+  return option;
+}
+
 int main(int argc, char *argv[]) {
-  Option opt{};
-  CLI::App app;
-  app.add_option("--load-dir", opt.load_dir)->required()->check(CLI::ExistingDirectory);
-  app.add_option("--trials", opt.trials)->required()->check(CLI::PositiveNumber);
-  app.add_option("--depth", opt.depth)->required()->check(CLI::PositiveNumber);
-  app.add_flag("--gpu", opt.use_gpu);
-  CLI11_PARSE(app, argc, argv);
-
-  DependencyGraph graph;
-  if (!graph.load(opt.load_dir)) {
-    println("Failed to load DependencyGraph from directory: {}", opt.load_dir);
-    return 1;
+  auto [data_directory, test_time, depth, format, use_gpu] = parse_args(argc, argv);
+  bool tree = format == "tree";
+  xpg::XPGraph graph(data_directory, xpg::open_mode::kLoad);
+  if (use_gpu) graph.build_cache();
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<std::size_t> dist(0, graph.package_count() - 1);
+  volatile std::size_t sink = 0;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(test_time);
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto package = graph.get_package(dist(gen));
+    if (package.versions().size() <= 2) continue;
+    auto result = graph.query_dependencies(package.name, "", "", depth, tree, use_gpu);
+    sink += result.index();
   }
-  println("Total {} packages, {} versions, {} dependencies.",
-          graph.package_count(), graph.version_count(), graph.dependency_count());
-  print("Building cache on GPU... ");
-  auto sync_time = measure_time<std::chrono::milliseconds>([&] { graph.build_cache(); });
-  println("Done. ({} s)", sync_time.count() / 1000.0);
-
-  std::vector<std::string> to_query;
-  for (std::size_t i = 0; i < graph.package_count(); i += graph.package_count() / opt.trials)
-    for (auto j = i;; j++) {
-      auto pview = graph.get_package(j % graph.package_count());
-      if (pview.versions().empty()) continue;
-      to_query.emplace_back(pview.name);
-      break;
-    }
-
-  print("Querying dependencies for {} packages with depth={}{}... ",
-        to_query.size(), opt.depth, opt.use_gpu ? " using GPU" : "");
-  auto query_time = measure_time<std::chrono::milliseconds>([&] {
-    for (const auto &name : to_query)
-      auto _ = graph.query_dependencies(name, "", "", opt.depth, opt.use_gpu);
-  });
-  println(" Done. ({:.3f} s)", query_time.count() / 1000.0);
-  println("Average time per query: {:.3f} ms", query_time.count() / static_cast<double>(to_query.size()));
-  return 0;
+  return sink == static_cast<std::size_t>(-1);
 }

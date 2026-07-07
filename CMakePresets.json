@@ -2,25 +2,22 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "msvc-release",
-      "displayName": "MSVC Release",
+      "name": "Release",
+      "displayName": "Release",
       "generator": "Ninja",
-      "binaryDir": "build",
+      "binaryDir": "build/release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "cl.exe",
-        "CMAKE_CUDA_COMPILER": "nvcc.exe"
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
-      "name": "gcc-release",
-      "displayName": "GCC Release",
+      "name": "RelWithDebInfo",
+      "displayName": "RelWithDebInfo",
       "generator": "Ninja",
-      "binaryDir": "build",
+      "binaryDir": "build/relwithdebinfo",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "g++",
-        "CMAKE_CUDA_COMPILER": "nvcc"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -fno-omit-frame-pointer"
       }
     }
   ]

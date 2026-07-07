@@ -114,6 +114,9 @@ public:
   const_iterator cbegin() const noexcept requires has_length { return begin(); }
   const_iterator cend() const noexcept requires has_length { return end(); }
 
+  const std::byte *data() const noexcept requires has_length { return pool_.data() + sizeof(header_t); }
+  const char_type *data() const noexcept
+    requires (!has_length) { return reinterpret_cast<const char_type *>(pool_.data() + sizeof(header_t)); }
   void reserve_bytes(size_type capacity) { pool_.reserve(sizeof(header_t) + capacity); }
   void clear() { pool_.resize(sizeof(header_t)); }
 

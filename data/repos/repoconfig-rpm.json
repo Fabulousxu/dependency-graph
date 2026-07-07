@@ -1,0 +1,12 @@
+{
+  "fedora": {
+    "enabled": true,
+    "type": "DEB",
+    "urls": [
+      "https://download.fedoraproject.org/pub/fedora/linux/releases",
+      "https://ftp.sjtu.edu.cn/fedora/linux/releases"
+    ],
+    "distributions": ["42", "43", "44"],
+    "architectures": ["aarch64", "source", "x86_64"]
+  }
+}

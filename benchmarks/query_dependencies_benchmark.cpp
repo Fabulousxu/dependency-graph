@@ -15,7 +15,7 @@
 #include "json_serialization.hpp"
 #include "package_loader.hpp"
 #include "util.hpp"
-#include "x_package_graph.hpp"
+#include "xpgraph.hpp"
 
 struct Option {
   std::size_t sample_size;
@@ -23,12 +23,12 @@ struct Option {
   std::filesystem::path repository_config;
   std::filesystem::path cache_directory;
   std::filesystem::path temp_directory;
-  std::string output;
+  std::filesystem::path output;
 };
 
 Option parse_args(int argc, char **argv) {
   Option option;
-  CLI::App app("XPackageGraph query dependencies benchmark");
+  CLI::App app("XPGraph query dependencies benchmark");
   app.add_option("--sample-size", option.sample_size, "Number of sampled packages to benchmark")
      ->required()->check(CLI::PositiveNumber);
   app.add_option("--max-depth", option.max_depth, "Maximum dependency query depth")
@@ -44,7 +44,7 @@ Option parse_args(int argc, char **argv) {
   return option;
 }
 
-std::vector<std::string> generate_samples(const xpg::XPackageGraph &graph, std::size_t sample_size) {
+std::vector<std::string> generate_samples(const xpg::XPGraph &graph, std::size_t sample_size) {
   std::vector<std::string> samples;
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -73,7 +73,7 @@ double analyze_times(std::vector<std::size_t> &times, std::size_t sample_size, J
 }
 
 template <class Json>
-void run_benchmark(const xpg::XPackageGraph &graph, const std::vector<std::string> samples, std::size_t max_depth,
+void run_benchmark(const xpg::XPGraph &graph, const std::vector<std::string> samples, std::size_t max_depth,
                    bool use_buffer, bool use_gpu, Json &j, std::string_view key = "") {
   auto run_query = [&, use_buffer, use_gpu](std::string_view name, std::size_t depth, bool tree) {
     if (use_buffer) graph.query_dependencies_in_buffer(name, "", "", depth, tree);
@@ -81,7 +81,7 @@ void run_benchmark(const xpg::XPackageGraph &graph, const std::vector<std::strin
   };
   Json jtree, jflat;
   std::vector<std::vector<std::size_t>> tree_times(max_depth), flat_times(max_depth);
-  for (auto depth = 1; depth <= max_depth; ++depth) {
+  for (auto depth : std::views::iota(1ull, max_depth + 1)) {
     if (!key.empty()) xpg::println("[{}] Testing with depth={}...", key, depth);
     else xpg::println("Testing with depth={}...", depth);
     for (auto name : samples) {
@@ -107,13 +107,13 @@ int main(int argc, char *argv[]) {
   if (!file.good())
     throw std::runtime_error(std::format("Failed to open repository config file: {}.", repository_config.string()));
   auto config = nlohmann::json::parse(file).get<xpg::RepositoryConfig>();
-  xpg::XPackageGraph graph(temp_directory, xpg::open_mode::kCreate);
+  xpg::XPGraph graph(temp_directory, xpg::open_mode::kCreate);
   xpg::PackageLoader loader(graph);
   nlohmann::ordered_json jreport, jcpu, jgpu, jmem;
   auto load_time = xpg::measure_time<std::chrono::milliseconds>(
     [&] { loader.load_repositories(repository_config, cache_directory, false, true); });
   auto samples = generate_samples(graph, sample_size);
-  xpg::println("=== XPackageGraph Query Dependencies Benchmark ===");
+  xpg::println("=== XPGraph Query Dependencies Benchmark ===");
   xpg::println("Testing {} sample packages with depth from 1 to {}...", sample_size, max_depth);
   run_benchmark(graph, samples, max_depth, true, false, jmem, "uncompacted");
   auto flush_time = xpg::measure_time<std::chrono::milliseconds>([&] { loader.flush_buffer(false, true); });
@@ -124,24 +124,34 @@ int main(int argc, char *argv[]) {
   xpg::println("==================================================");
   std::ranges::sort(samples);
 
-  jreport["title"] = "XPackageGraph Query Dependencies Benchmark";
+  jreport["title"] = "XPGraph Query Dependencies Benchmark";
   jreport["time"] = xpg::now_iso8601();
   jreport["repositories"] = config;
   auto &jdata = jreport["data"];
-  jdata["package_count"] = graph.buffer_package_count();
-  jdata["version_count"] = graph.buffer_version_count();
-  jdata["dependency_count"] = graph.buffer_dependency_count();
+  jdata["package_count"] = graph.package_count();
+  jdata["version_count"] = graph.version_count();
+  jdata["dependency_count"] = graph.dependency_count();
   jdata["load_seconds"] = load_time.count() / 1000.0;
   jdata["flush_seconds"] = flush_time.count() / 1000.0;
   jdata["cache_seconds"] = cache_time.count() / 1000.0;
   jreport["sample_size"] = sample_size;
   jreport["samples"] = std::move(samples);
   jreport["max_depth"] = max_depth;
+  jreport["filter_architecture"] = true;
+  jreport["filter_version"] = true;
+  jreport["expand_alternative"] = true;
   jreport["latency_milliseconds"] =
     {{"cpu", {std::move(jcpu)}}, {"gpu", {std::move(jgpu)}}, {"uncompacted", {std::move(jmem)}}};
   if (!output.empty()) {
-    std::filesystem::create_directories(std::filesystem::path(output).parent_path());
-    std::ofstream(output) << jreport.dump(2);
+    auto report = jreport.dump(2);
+    try {
+      std::filesystem::create_directories(output.parent_path());
+      std::ofstream(output) << report;
+    } catch (const std::exception &e) {
+      xpg::println("{}", report);
+      xpg::println(std::cerr, "Failed to generate benchmark report: {}", e.what());
+    }
+    xpg::println("Generated benchmark report: {}", output.string());
   }
   xpg::println("Cleaning up...");
   graph.close();

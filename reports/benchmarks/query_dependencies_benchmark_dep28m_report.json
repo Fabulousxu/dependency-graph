@@ -4,7 +4,8 @@
   "repositories": {
     "ubuntu": {
       "enabled": true,
-      "url": [
+      "type": "DEB",
+      "urls": [
         "https://archive.ubuntu.com/ubuntu",
         "https://old-releases.ubuntu.com/ubuntu",
         "https://mirror.sjtu.edu.cn/ubuntu"
@@ -76,7 +77,8 @@
     },
     "openkylin": {
       "enabled": true,
-      "url": [
+      "type": "DEB",
+      "urls": [
         "https://mirror.sjtu.edu.cn/openkylin"
       ],
       "distributions": [
@@ -95,7 +97,8 @@
     },
     "debian": {
       "enabled": true,
-      "url": [
+      "type": "DEB",
+      "urls": [
         "https://deb.debian.org/debian",
         "https://archive.debian.org/debian",
         "https://mirror.sjtu.edu.cn/debian"
@@ -210,6 +213,9 @@
     "xserver-xorg-lts-vivid"
   ],
   "max_depth": 10,
+  "filter_architecture": true,
+  "filter_version": false,
+  "expand_alternative": true,
   "latency_milliseconds": {
     "cpu": {
       "tree_query": {

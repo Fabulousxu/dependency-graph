@@ -69,16 +69,14 @@ public:
   std::vector<VersionInfo> query_versions(std::string_view name, std::string_view architecture) const;
 
   std::variant<DependencyTree, DependencyFlat> query_dependencies(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
   DependencyTree query_dependency_tree(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
   DependencyFlat query_dependency_flat(
-    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth) const;
-
-  static HOST_DEVICE bool match_architecture(ArchitectureId target, ArchitectureId constraint) noexcept {
-    if (constraint == kAnyArchitecture || constraint == kAllArchitecture) return true;
-    return target == kAllArchitecture || target == constraint;
-  }
+    std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+    bool filter_architecture, bool filter_version, bool expand_alternative) const;
 
 private:
   struct PackageNode {

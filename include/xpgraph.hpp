@@ -14,16 +14,16 @@
 
 namespace xpg {
 
-class XPackageGraph {
+class XPGraph {
 public:
-  XPackageGraph(std::size_t memory_limit = -1ull, std::size_t growth_bytes = kDefaultGrowthBytes) noexcept;
-  XPackageGraph(const std::filesystem::path &directory, open_mode mode = open_mode::kLoadOrCreate,
-                std::size_t memory_limit = -1ull, std::size_t growth_bytes = kDefaultGrowthBytes);
-  XPackageGraph(const XPackageGraph &) = delete;
-  XPackageGraph &operator=(const XPackageGraph &) = delete;
-  XPackageGraph(XPackageGraph &&) noexcept = default;
-  XPackageGraph &operator=(XPackageGraph &&) = delete;
-  ~XPackageGraph() { close(); }
+  XPGraph(std::size_t memory_limit = -1ull, std::size_t growth_bytes = kDefaultGrowthBytes) noexcept;
+  XPGraph(const std::filesystem::path &directory, open_mode mode = open_mode::kLoadOrCreate,
+          std::size_t memory_limit = -1ull, std::size_t growth_bytes = kDefaultGrowthBytes);
+  XPGraph(const XPGraph &) = delete;
+  XPGraph &operator=(const XPGraph &) = delete;
+  XPGraph(XPGraph &&) noexcept = default;
+  XPGraph &operator=(XPGraph &&) = delete;
+  ~XPGraph() { close(); }
 
   void load(const std::filesystem::path &directory) { storage_graph_.load(directory); }
   void create(const std::filesystem::path &directory);
@@ -63,8 +63,10 @@ public:
   std::vector<VersionInfo> query_versions(std::string_view name, std::string_view architecture = "") const;
   std::variant<DependencyTree, DependencyFlat> query_dependencies(
     std::string_view name, std::string_view version = "", std::string_view architecture = "", std::size_t depth = 1,
-    bool tree = true, bool use_gpu = false) const;
+    bool tree = true, bool use_gpu = false, bool filter_architecture = true, bool filter_version = true,
+    bool expand_alternative = true) const;
 
+#if 1
   // Only use for test
   std::size_t buffer_package_count() const noexcept { return buffer_graph_.package_count(); }
   std::size_t buffer_version_count() const noexcept { return buffer_graph_.version_count(); }
@@ -74,7 +76,12 @@ public:
     noexcept { return buffer_graph_.get_package(name); }
   std::variant<DependencyTree, DependencyFlat> query_dependencies_in_buffer(
     std::string_view name, std::string_view version = "", std::string_view architecture = "", std::size_t depth = 1,
-    bool tree = true) const { return buffer_graph_.query_dependencies(name, version, architecture, depth, tree); }
+    bool tree = true, bool filter_architecture = true, bool filter_version = true,
+    bool expand_alternative = true) const {
+    return buffer_graph_.query_dependencies(name, version, architecture, depth, tree, filter_architecture,
+                                            filter_version, expand_alternative);
+  }
+#endif
 
 private:
   StorageGraph storage_graph_;
@@ -82,10 +89,11 @@ private:
   mutable CacheGraph cache_graph_;
   std::size_t memory_limit_;
 
-  static constexpr std::initializer_list<std::string_view> kDefaultArchitectures = {"", "any", "all"};
-  static constexpr std::initializer_list<std::string_view> kDefaultDependencyTypes = {
+  static constexpr std::initializer_list<std::string_view> kBasicArchitectures = {"", "any", "all", "noarch"};
+  static constexpr std::initializer_list<std::string_view> kDependencyTypes = {
     "DEPENDS", "PRE_DEPENDS", "RECOMMENDS", "SUGGESTS", "BREAKS", "CONFLICTS", "PROVIDES", "REPLACES", "ENHANCES",
-    "BUILT_USING", "STATIC_BUILT_USING", "JAVASCRIPT_BUILT_USING", "X_CARGO_BUILT_USING"
+    "BUILT_USING", "STATIC_BUILT_USING", "JAVASCRIPT_BUILT_USING", "X_CARGO_BUILT_USING", "REQUIRES", "OBSOLETES",
+    "SUPPLEMENTS"
   };
 };
 

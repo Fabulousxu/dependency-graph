@@ -1,0 +1,47 @@
+{
+  "debian": {
+    "enabled": true,
+    "type": "DEB",
+    "urls": [
+      "https://deb.debian.org/debian",
+      "https://archive.debian.org/debian",
+      "https://mirror.sjtu.edu.cn/debian"
+    ],
+    "distributions": [
+      "bo", "bookworm", "bullseye", "buster", "buzz", "etch", "forky", "hamm", "jessie", "lenny", "potato", "rex",
+      "sarge", "slink", "squeeze", "stretch", "trixie", "wheezy", "woody"
+    ],
+    "architectures": [
+      "all", "alpha", "amd64", "arm", "arm64", "armel", "armhf", "hppa", "i386", "ia64", "kfreebsd-amd64",
+      "kfreebsd-i386", "loong64", "m68k", "mips", "mips64el", "mipsel", "powerpc", "ppc64el", "riscv64", "s390",
+      "s390x", "sparc"
+    ]
+  },
+  "ubuntu": {
+    "enabled": true,
+    "type": "DEB",
+    "url": [
+      "https://archive.ubuntu.com/ubuntu",
+      "https://old-releases.ubuntu.com/ubuntu",
+      "https://mirror.sjtu.edu.cn/ubuntu"
+    ],
+    "distributions": [
+      "artful", "bionic", "breezy", "cosmic", "dapper", "devel", "disco", "edgy", "eoan", "feisty", "focal", "groovy",
+      "gutsy", "hardy", "hirsute", "hoary", "impish", "intrepid", "jammy", "jaunty", "karmic", "kinetic", "lucid",
+      "lunar", "mantic", "maverick", "natty", "noble", "oneiric", "oracular", "plucky", "precise", "quantal",
+      "questing", "raring", "resolute", "saucy", "stonking", "trusty", "utopic", "vivid", "warty", "wily", "xenial",
+      "yakkety", "zesty"
+    ],
+    "architectures": [
+      "amd64", "amd64v3", "arm64", "armel", "armhf", "hppa", "i386", "ia64", "lpia", "powerpc", "ppc64el", "riscv64",
+      "s390x", "sparc"
+    ]
+  },
+  "openkylin": {
+    "enabled": true,
+    "type": "DEB",
+    "url": ["https://mirror.sjtu.edu.cn/openkylin"],
+    "distributions": ["huanghe", "nile", "yangtze"],
+    "architectures": ["amd64", "arm64", "i386", "loong64", "riscv64", "rv64g"]
+  }
+}

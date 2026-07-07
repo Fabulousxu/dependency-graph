@@ -14,7 +14,7 @@
 #include "json_serialization.hpp"
 #include "package_loader.hpp"
 #include "util.hpp"
-#include "x_package_graph.hpp"
+#include "xpgraph.hpp"
 
 struct Option {
   std::size_t sample_size;
@@ -22,12 +22,12 @@ struct Option {
   std::filesystem::path repository_config;
   std::filesystem::path cache_directory;
   std::filesystem::path temp_directory;
-  std::string output;
+  std::filesystem::path output;
 };
 
 Option parse_args(int argc, char **argv) {
   Option option;
-  CLI::App app("XPackageGraph query dependencies correctness test");
+  CLI::App app("XPGraph query dependencies correctness test");
   app.add_option("--sample-size", option.sample_size, "Number of sampled packages to test")
      ->required()->check(CLI::PositiveNumber);
   app.add_option("--max-depth", option.max_depth, "Maximum dependency query depth")
@@ -43,7 +43,7 @@ Option parse_args(int argc, char **argv) {
   return option;
 }
 
-std::vector<std::string> generate_samples(const xpg::XPackageGraph &graph, std::size_t sample_size) {
+std::vector<std::string> generate_samples(const xpg::XPGraph &graph, std::size_t sample_size) {
   std::vector<std::string> samples;
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -59,7 +59,7 @@ std::vector<std::string> generate_samples(const xpg::XPackageGraph &graph, std::
 
 template <class Json>
 bool check_result(const xpg::DependencyFlat &cpu, const xpg::DependencyFlat &gpu, Json &j) {
-  for (auto level = 0; level < cpu.size(); ++level) {
+  for (auto level : std::views::iota(0ull, cpu.size())) {
     j["failed_level"] = level + 1;
     const auto &clevel = cpu[level];
     const auto &glevel = gpu[level];
@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
   if (!file.good())
     throw std::runtime_error(std::format("Failed to open repository config file: {}.", repository_config.string()));
   auto config = nlohmann::json::parse(file).get<xpg::RepositoryConfig>();
-  xpg::XPackageGraph graph(temp_directory, xpg::open_mode::kCreate);
+  xpg::XPGraph graph(temp_directory, xpg::open_mode::kCreate);
   xpg::PackageLoader loader(graph);
   nlohmann::ordered_json jreport, jfaileds = nlohmann::ordered_json::array();
   auto load_time = xpg::measure_time<std::chrono::milliseconds>(
@@ -111,10 +111,10 @@ int main(int argc, char *argv[]) {
   auto cache_time = xpg::measure_time<std::chrono::milliseconds>([&] { loader.build_cache(); });
   auto samples = generate_samples(graph, sample_size);
 
-  xpg::println("=== XPackageGraph Query Dependencies Correctness Test ===");
+  xpg::println("=== XPGraph Query Dependencies Correctness Test ===");
   xpg::println("Testing {} sample packages with depth from 1 to {}...", sample_size, max_depth);
   std::size_t passed_count = 0, tested_count = 0;
-  for (auto depth = 1; depth <= max_depth; ++depth) {
+  for (auto depth : std::views::iota(1ull, max_depth + 1)) {
     for (const auto &name : samples) {
       nlohmann::ordered_json jfailed;
       jfailed["package_name"] = name;
@@ -137,7 +137,7 @@ int main(int argc, char *argv[]) {
                tested_count, passed_count, tested_count - passed_count);
   xpg::println("=========================================================");
 
-  jreport["title"] = "XPackageGraph Query Dependencies Correctness Test";
+  jreport["title"] = "XPGraph Query Dependencies Correctness Test";
   jreport["time"] = xpg::now_iso8601();
   jreport["repositories"] = config;
   auto &jdata = jreport["data"];
@@ -150,13 +150,23 @@ int main(int argc, char *argv[]) {
   jreport["sample_size"] = samples.size();
   jreport["samples"] = samples;
   jreport["max_depth"] = max_depth;
+  jreport["filter_architecture"] = true;
+  jreport["filter_version"] = true;
+  jreport["expand_alternative"] = true;
   jreport["total_test_count"] = tested_count;
   jreport["passed_test_count"] = passed_count;
   jreport["failed_test_count"] = tested_count - passed_count;
   jreport["failed_tests"] = std::move(jfaileds);
   if (!output.empty()) {
-    std::filesystem::create_directories(std::filesystem::path(output).parent_path());
-    std::ofstream(output) << jreport.dump(2);
+    auto report = jreport.dump(2);
+    try {
+      std::filesystem::create_directories(output.parent_path());
+      std::ofstream(output) << report;
+    } catch (const std::exception &e) {
+      xpg::println("{}", report);
+      xpg::println(std::cerr, "Failed to generate test report: {}", e.what());
+    }
+    xpg::println("Generated test report: {}", output.string());
   }
   xpg::println("Cleaning up...");
   graph.close();

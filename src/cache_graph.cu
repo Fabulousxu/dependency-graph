@@ -18,8 +18,8 @@ void cudaCheck(cudaError_t code) {
 
 CacheGraph::CacheGraph(const StorageGraph &graph) noexcept
   : storage_graph_(graph), package_nodes_(nullptr), version_nodes_(nullptr), dependency_edges_(nullptr),
-    frontier_(nullptr), frontier_trees_(nullptr), next_(nullptr), next_trees_(nullptr), next_size_(nullptr),
-    result_(nullptr), result_trees_(nullptr), result_size_(nullptr), visited_(nullptr), mark_(1) {}
+    string_pool_(nullptr), frontier_(nullptr), frontier_trees_(nullptr), next_(nullptr), next_trees_(nullptr),
+    next_size_(nullptr), result_(nullptr), result_trees_(nullptr), result_size_(nullptr), visited_(nullptr), mark_(1) {}
 
 void CacheGraph::build() {
   clear();
@@ -32,9 +32,17 @@ void CacheGraph::build() {
     auto vcount = static_cast<VersionCount>(0);
     storage_graph_.for_each_version(pnode, [&, this](VersionId vid, const StorageGraph::VersionNode &vnode) {
       to_cache_version_id_[vid] = static_cast<VersionId>(vnodes.size());
-      vnodes.push_back({vnode.architecture, vnode.dependency_count, static_cast<DependencyId>(dedges.size())});
+      auto version = storage_graph_.string_pool_[vnode.version];
+      vnodes.push_back({
+        vnode.architecture, static_cast<StringOffset>(vnode.version + sizeof(StringLength)),
+        static_cast<StringLength>(version.size()), vnode.dependency_count, static_cast<DependencyId>(dedges.size())
+      });
       storage_graph_.for_each_dependency(vnode, [&](DependencyId did, const StorageGraph::DependencyEdge &dedge) {
-        dedges.push_back({did, dedge.to_package, dedge.architecture_constraint, dedge.type, dedge.group});
+        auto version_constraint = storage_graph_.string_pool_[dedge.version_constraint];
+        dedges.push_back({
+          did, dedge.to_package, static_cast<StringOffset>(dedge.version_constraint + sizeof(StringLength)),
+          static_cast<StringLength>(version_constraint.size()), dedge.architecture_constraint, dedge.type, dedge.group
+        });
       });
       ++vcount;
     });
@@ -43,6 +51,7 @@ void CacheGraph::build() {
   cudaCheck(cudaMalloc(&package_nodes_, pnodes.size() * sizeof(PackageNode)));
   cudaCheck(cudaMalloc(&version_nodes_, vnodes.size() * sizeof(VersionNode)));
   cudaCheck(cudaMalloc(&dependency_edges_, dedges.size() * sizeof(DependencyEdge)));
+  cudaCheck(cudaMalloc(&string_pool_, storage_graph_.string_pool_.size_bytes()));
   cudaCheck(cudaMalloc(&frontier_, kMaxDeviceVectorBytes));
   cudaCheck(cudaMalloc(&frontier_trees_, kMaxDeviceVectorBytes));
   cudaCheck(cudaMalloc(&next_, kMaxDeviceVectorBytes));
@@ -56,6 +65,8 @@ void CacheGraph::build() {
   cudaCheck(cudaMemcpy(version_nodes_, vnodes.data(), vnodes.size() * sizeof(VersionNode), cudaMemcpyHostToDevice));
   cudaCheck(cudaMemcpy(dependency_edges_, dedges.data(), dedges.size() * sizeof(DependencyEdge),
                        cudaMemcpyHostToDevice));
+  cudaCheck(cudaMemcpy(string_pool_, storage_graph_.string_pool_.data(), storage_graph_.string_pool_.size_bytes(),
+                       cudaMemcpyHostToDevice));
   cudaCheck(cudaMemset(visited_, 0, vnodes.size() * sizeof(VisitedMark)));
   mark_ = 1;
 }
@@ -64,6 +75,7 @@ void CacheGraph::clear() {
   if (package_nodes_) cudaCheck(cudaFree(package_nodes_));
   if (version_nodes_) cudaCheck(cudaFree(version_nodes_));
   if (dependency_edges_) cudaCheck(cudaFree(dependency_edges_));
+  if (string_pool_) cudaCheck(cudaFree(string_pool_));
   if (frontier_) cudaCheck(cudaFree(frontier_));
   if (frontier_trees_) cudaCheck(cudaFree(frontier_trees_));
   if (next_) cudaCheck(cudaFree(next_));
@@ -76,6 +88,7 @@ void CacheGraph::clear() {
   package_nodes_ = nullptr;
   version_nodes_ = nullptr;
   dependency_edges_ = nullptr;
+  string_pool_ = nullptr;
   frontier_ = nullptr;
   frontier_trees_ = nullptr;
   next_ = nullptr;
@@ -88,9 +101,13 @@ void CacheGraph::clear() {
 }
 
 std::variant<DependencyTree, DependencyFlat> CacheGraph::query_dependencies(
-  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree) const {
-  if (tree) return query_dependency_tree(name, version, architecture, depth);
-  return query_dependency_flat(name, version, architecture, depth);
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
+  bool filter_architecture, bool filter_version, bool expand_alternative) const {
+  if (tree)
+    return query_dependency_tree(name, version, architecture, depth, filter_architecture, filter_version,
+                                 expand_alternative);
+  return query_dependency_flat(name, version, architecture, depth, filter_architecture, filter_version,
+                               expand_alternative);
 }
 
 std::vector<VersionId> CacheGraph::init_frontier(std::string_view name, std::string_view version,
@@ -100,13 +117,13 @@ std::vector<VersionId> CacheGraph::init_frontier(std::string_view name, std::str
   return frontier;
 }
 
-__global__ void expand_tree(const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
-                            const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier,
-                            const CacheGraph::TreeId *frontier_trees, cuda_size_t frontier_size, VersionId *next,
-                            CacheGraph::TreeId *next_trees, cuda_size_t *next_size, DependencyId *result,
-                            CacheGraph::TreeId *result_trees, cuda_size_t *result_size,
-                            CacheGraph::VisitedMark *visited, CacheGraph::VisitedMark mark, cuda_size_t depth,
-                            cuda_size_t level, cuda_size_t tree_size) {
+__global__ void expand_tree(
+  const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
+  const CacheGraph::DependencyEdge *dependency_edges, const char *string_pool, const VersionId *frontier,
+  const CacheGraph::TreeId *frontier_trees, cuda_size_t frontier_size, VersionId *next, CacheGraph::TreeId *next_trees,
+  cuda_size_t *next_size, DependencyId *result, CacheGraph::TreeId *result_trees, cuda_size_t *result_size,
+  CacheGraph::VisitedMark *visited, CacheGraph::VisitedMark mark, cuda_size_t depth, cuda_size_t level,
+  cuda_size_t tree_size, bool filter_architecture, bool filter_version, bool expand_alternative) {
   auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= frontier_size) return;
   if (level == 0) {
@@ -121,11 +138,18 @@ __global__ void expand_tree(const CacheGraph::PackageNode *package_nodes, const 
       result[rpos] = dedge.original;
       result_trees[rpos] = frontier_trees[idx];
     }
-    if (level + 1 < depth) {
+    if (level + 1 < depth && (expand_alternative || dedge.group == 0)) {
       const auto &tpnode = package_nodes[dedge.to_package];
       for (auto vid = tpnode.version_begin; vid < tpnode.version_begin + tpnode.version_count; ++vid) {
         if (visited[vid] == mark) continue;
-        if (!StorageGraph::match_architecture(version_nodes[vid].architecture, dedge.architecture_constraint)) continue;
+        const auto &next_vnode = version_nodes[vid];
+        if (filter_architecture && !xpg::filter_architecture(next_vnode.architecture, dedge.architecture_constraint))
+          continue;
+        if (filter_version &&
+          !xpg::filter_version(
+            device_string_view{string_pool + next_vnode.version_offset, next_vnode.version_length},
+            device_string_view{string_pool + dedge.version_constraint_offset, dedge.version_constraint_length}))
+          continue;
         auto old = visited[vid];
         if (atomicCAS(&visited[vid], old, mark) != mark) {
           auto npos = atomicAdd(next_size, 1);
@@ -139,8 +163,9 @@ __global__ void expand_tree(const CacheGraph::PackageNode *package_nodes, const 
   }
 }
 
-DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::string_view version,
-                                                 std::string_view architecture, std::size_t depth) const {
+DependencyTree CacheGraph::query_dependency_tree(
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+  bool filter_architecture, bool filter_version, bool expand_alternative) const {
   auto frontier = init_frontier(name, version, architecture);
   if (frontier.empty()) return {};
   cuda_size_t frontier_size = frontier.size();
@@ -159,14 +184,15 @@ DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::str
     cudaCheck(cudaMemset(result_size_, 0, sizeof(cuda_size_t)));
     int threads = 256, blocks = (frontier_size + threads - 1) / threads;
     cuda_size_t tree_size = trees.size();
-    expand_tree<<<blocks, threads>>>(
-      package_nodes_, version_nodes_, dependency_edges_, frontier_, frontier_trees_, frontier_size, next_, next_trees_,
-      next_size_, result_, result_trees_, result_size_, visited_, mark_, depth, level, tree_size);
+    expand_tree<<<blocks, threads>>>(package_nodes_, version_nodes_, dependency_edges_, string_pool_, frontier_,
+                                     frontier_trees_, frontier_size, next_, next_trees_, next_size_, result_,
+                                     result_trees_, result_size_, visited_, mark_, depth, level, tree_size,
+                                     filter_architecture, filter_version, expand_alternative);
     cudaCheck(cudaGetLastError());
     cudaCheck(cudaDeviceSynchronize());
     cuda_size_t result_size;
     cudaCheck(cudaMemcpy(&result_size, result_size_, sizeof(cuda_size_t), cudaMemcpyDeviceToHost));
-    if (result_size >= kMaxDeviceVectorSize<VersionId>) throw std::out_of_range("Reached max device vector size");
+    if (result_size >= kMaxDeviceVectorSize<DependencyId>) throw std::out_of_range("Reached max device vector size");
     std::vector<DependencyId> result_level(result_size);
     std::vector<TreeId> result_trees(result_size);
     cudaCheck(cudaMemcpy(result_level.data(), result_, result_size * sizeof(DependencyId), cudaMemcpyDeviceToHost));
@@ -216,11 +242,12 @@ DependencyTree CacheGraph::query_dependency_tree(std::string_view name, std::str
   return build_tree(build_tree, 0);
 }
 
-__global__ void expand_flat(const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
-                            const CacheGraph::DependencyEdge *dependency_edges, const VersionId *frontier,
-                            cuda_size_t frontier_size, VersionId *next, cuda_size_t *next_size,
-                            DependencyId *result, cuda_size_t *result_size, CacheGraph::VisitedMark *visited,
-                            CacheGraph::VisitedMark mark, cuda_size_t depth, cuda_size_t level) {
+__global__ void expand_flat(
+  const CacheGraph::PackageNode *package_nodes, const CacheGraph::VersionNode *version_nodes,
+  const CacheGraph::DependencyEdge *dependency_edges, const char *string_pool, const VersionId *frontier,
+  cuda_size_t frontier_size, VersionId *next, cuda_size_t *next_size, DependencyId *result, cuda_size_t *result_size,
+  CacheGraph::VisitedMark *visited, CacheGraph::VisitedMark mark, cuda_size_t depth, cuda_size_t level,
+  bool filter_architecture, bool filter_version, bool expand_alternative) {
   auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= frontier_size) return;
   if (level == 0) {
@@ -232,11 +259,17 @@ __global__ void expand_flat(const CacheGraph::PackageNode *package_nodes, const 
     const auto &dedge = dependency_edges[did];
     auto pos = atomicAdd(result_size, 1);
     if (pos < kMaxDeviceVectorSize<DependencyId>) result[pos] = dedge.original;
-    if (level + 1 < depth) {
+    if (level + 1 < depth && (expand_alternative || dedge.group == 0)) {
       const auto &pnode = package_nodes[dedge.to_package];
       for (auto vid = pnode.version_begin; vid < pnode.version_begin + pnode.version_count; ++vid) {
         if (visited[vid] == mark) continue;
-        if (!StorageGraph::match_architecture(version_nodes[vid].architecture, dedge.architecture_constraint)) continue;
+        const auto &next_vnode = version_nodes[vid];
+        if (filter_architecture && !xpg::filter_architecture(next_vnode.architecture, dedge.architecture_constraint))
+          continue;
+        if (filter_version && !xpg::filter_version(
+          device_string_view(string_pool + next_vnode.version_offset, next_vnode.version_length),
+          device_string_view(string_pool + dedge.version_constraint_offset, dedge.version_constraint_length)))
+          continue;
         auto old = visited[vid];
         if (atomicCAS(&visited[vid], old, mark) != mark) {
           pos = atomicAdd(next_size, 1);
@@ -247,19 +280,21 @@ __global__ void expand_flat(const CacheGraph::PackageNode *package_nodes, const 
   }
 }
 
-DependencyFlat CacheGraph::query_dependency_flat(std::string_view name, std::string_view version,
-                                                 std::string_view architecture, std::size_t depth) const {
+DependencyFlat CacheGraph::query_dependency_flat(
+  std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
+  bool filter_architecture, bool filter_version, bool expand_alternative) const {
   DependencyFlat result(depth);
   auto frontier = init_frontier(name, version, architecture);
   if (frontier.empty()) return result;
   cuda_size_t frontier_size = frontier.size();
   cudaCheck(cudaMemcpy(frontier_, frontier.data(), frontier_size * sizeof(VersionId), cudaMemcpyHostToDevice));
-  for (auto level = 0; level < depth && frontier_size > 0; ++level) {
+  for (auto level : std::views::iota(0ull, depth)) {
     cudaCheck(cudaMemset(next_size_, 0, sizeof(cuda_size_t)));
     cudaCheck(cudaMemset(result_size_, 0, sizeof(cuda_size_t)));
     int threads = 256, blocks = (frontier_size + threads - 1) / threads;
-    expand_flat<<<blocks, threads>>>(package_nodes_, version_nodes_, dependency_edges_, frontier_, frontier_size,
-                                     next_, next_size_, result_, result_size_, visited_, mark_, depth, level);
+    expand_flat<<<blocks, threads>>>(package_nodes_, version_nodes_, dependency_edges_, string_pool_, frontier_,
+                                     frontier_size, next_, next_size_, result_, result_size_, visited_, mark_, depth,
+                                     level, filter_architecture, filter_version, expand_alternative);
     cudaCheck(cudaGetLastError());
     cudaCheck(cudaDeviceSynchronize());
     cuda_size_t result_size;
@@ -299,6 +334,7 @@ DependencyFlat CacheGraph::query_dependency_flat(std::string_view name, std::str
       cudaCheck(cudaMemcpy(&frontier_size, next_size_, sizeof(cuda_size_t), cudaMemcpyDeviceToHost));
       if (frontier_size >= kMaxDeviceVectorSize<VersionId>) throw std::out_of_range("Reached max device vector size");
       std::swap(frontier_, next_);
+      if (frontier_size == 0) break;
     }
   }
   if (++mark_ == 0) {
