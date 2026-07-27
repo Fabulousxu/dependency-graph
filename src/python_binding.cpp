@@ -42,7 +42,7 @@ public:
     d["name"] = tree.name;
     d["type"] = tree.type;
     d["version_constraint"] = tree.version_constraint;
-    d["architecture"] = tree.architecture;
+    d["architecture"] = tree.architecture_constraint;
     dependencies["single_dependencies"] = tree.single_dependencies;
     dependencies["alternative_dependencies"] = tree.alternative_dependencies;
     d["dependencies"] = std::move(dependencies);
@@ -83,8 +83,9 @@ public:
 class PyXPGraph {
 public:
   PyXPGraph(const std::filesystem::path &data_directory, std::string_view open_mode = "load-or-create",
-            std::size_t memory_limit = -1ull, std::size_t growth_bytes = xpg::kDefaultGrowthBytes)
-    : graph_(data_directory, parse_open_mode(open_mode), memory_limit, growth_bytes) {}
+            std::size_t memory_limit = -1ull, std::size_t growth_bytes = xpg::kGrowthBytes)
+    : graph_(data_directory, parse_open_mode(open_mode), xpg::kArchitectureTypes, xpg::kDependencyTypes,
+             memory_limit, growth_bytes) {}
 
   void load(const std::filesystem::path &directory) { graph_.load(directory); }
   void create(const std::filesystem::path &directory) { graph_.create(directory); }
@@ -97,15 +98,15 @@ public:
 
   std::size_t growth_bytes() const noexcept { return graph_.growth_bytes(); }
   void set_growth_bytes(std::size_t growth_bytes) noexcept { graph_.set_growth_bytes(growth_bytes); }
-  std::size_t memory_limit() const noexcept { return graph_.memory_limit(); }
-  void set_memory_limit(std::size_t memory_limit) noexcept { graph_.set_memory_limit(memory_limit); }
+  std::size_t memory_limit() const noexcept { return graph_.flush_limit_bytes(); }
+  void set_memory_limit(std::size_t memory_limit) noexcept { graph_.set_flush_limit_bytes(memory_limit); }
   std::size_t package_count() const noexcept { return graph_.package_count(); }
   std::size_t version_count() const noexcept { return graph_.version_count(); }
   std::size_t dependency_count() const noexcept { return graph_.dependency_count(); }
 
   std::vector<std::string_view> architectures() const noexcept {
     std::vector<std::string_view> result;
-    for (auto arch : graph_.architectures()) result.emplace_back(arch);
+    for (auto arch : graph_.architecture_types()) result.emplace_back(arch);
     return result;
   }
 
@@ -138,10 +139,10 @@ public:
 
   py::dict query_dependencies(std::string_view name, std::string_view version = "", std::string_view architecture = "",
                               std::size_t depth = 1, bool tree = true, bool use_gpu = false,
-                              bool filter_architecture = true, bool filter_version = true,
+                              bool satisfy_architecture = true, bool satisfy_version = true,
                               bool expand_alternative = true) const {
-    auto result = graph_.query_dependencies(name, version, architecture, depth, tree, use_gpu, filter_architecture,
-                                            filter_version, expand_alternative);
+    auto result = graph_.query_dependencies(name, version, architecture, depth, tree, use_gpu, satisfy_architecture,
+                                            satisfy_version, expand_alternative);
     if (!tree || depth == 1) return py::cast(result);
     py::dict d;
     d["single_dependencies"] = std::get<xpg::DependencyTree>(result).single_dependencies;
@@ -159,7 +160,7 @@ PYBIND11_MODULE(pyxpgraph, m) {
   py::class_<PyXPGraph>(m, "XPGraph")
     .def(py::init<const std::filesystem::path &, std::string_view, std::size_t, std::size_t>(),
          py::arg("data_directory"), py::arg("open_mode") = "load-or-create", py::arg("memory_limit") = -1ull,
-         py::arg("growth_bytes") = xpg::kDefaultGrowthBytes)
+         py::arg("growth_bytes") = xpg::kGrowthBytes)
     .def("load", &PyXPGraph::load, py::arg("directory"))
     .def("create", &PyXPGraph::create, py::arg("directory"))
     .def("open", &PyXPGraph::open, py::arg("directory"), py::arg("open_mode") = "load-or-create")
@@ -186,5 +187,6 @@ PYBIND11_MODULE(pyxpgraph, m) {
     .def("query_versions", &PyXPGraph::query_versions, py::arg("name"), py::arg("architecture") = "")
     .def("query_dependencies", &PyXPGraph::query_dependencies, py::arg("name"), py::arg("version") = "",
          py::arg("architecture") = "", py::arg("depth") = 1, py::arg("tree") = true, py::arg("use_gpu") = false,
-         py::arg("filter_architecture") = true, py::arg("filter_version") = true, py::arg("expand_alternative") = true);
+         py::arg("satisfy_architecture") = true, py::arg("satisfy_version") = true,
+         py::arg("expand_alternative") = true);
 }

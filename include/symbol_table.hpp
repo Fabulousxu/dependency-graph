@@ -5,13 +5,14 @@
 #include <initializer_list>
 #include <iterator>
 #include <optional>
-#include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 #include "string_pool.hpp"
+#include "utils.hpp"
 
 namespace xpg {
 
@@ -24,6 +25,7 @@ public:
   using id_type = IdT;
   using char_type = CharT;
   using traits_type = Traits;
+  using underlying_type = std::underlying_type_t<id_type>;
   using view_type = std::basic_string_view<char_type, traits_type>;
   using size_type = std::size_t;
   using difference_type = std::ptrdiff_t;
@@ -40,10 +42,11 @@ public:
     using pointer = void;
     using reference = value_type;
 
-    iterator(const basic_symbol_table &table, id_type id = 0) noexcept : table_(table), id_(id) {}
+    iterator(const basic_symbol_table &table, id_type id = static_cast<id_type>(0)) noexcept : table_(table), id_(id) {}
 
     iterator &operator++() noexcept {
-      ++id_;
+      if constexpr (std::is_enum_v<id_type>) id_ = static_cast<id_type>(static_cast<underlying_type>(id_) + 1);
+      else ++id_;
       return *this;
     }
 
@@ -54,7 +57,8 @@ public:
     }
 
     iterator &operator--() noexcept {
-      --id_;
+      if constexpr (std::is_enum_v<id_type>) id_ = static_cast<id_type>(static_cast<underlying_type>(id_) - 1);
+      else --id_;
       return *this;
     }
 
@@ -65,12 +69,14 @@ public:
     }
 
     iterator &operator+=(difference_type n) noexcept {
-      id_ += static_cast<id_type>(n);
+      if constexpr (std::is_enum_v<id_type>) id_ = static_cast<id_type>(static_cast<underlying_type>(id_) + n);
+      else id_ += static_cast<id_type>(n);
       return *this;
     }
 
     iterator &operator-=(difference_type n) noexcept {
-      id_ -= static_cast<id_type>(n);
+      if constexpr (std::is_enum_v<id_type>) id_ = static_cast<id_type>(static_cast<underlying_type>(id_) - n);
+      else id_ -= static_cast<id_type>(n);
       return *this;
     }
 
@@ -86,11 +92,18 @@ public:
       return temp;
     }
 
-    friend difference_type operator-(const iterator &l, const iterator &r)
-      noexcept { return static_cast<difference_type>(l.id_) - static_cast<difference_type>(r.id_); }
+    friend difference_type operator-(const iterator &l, const iterator &r) noexcept {
+      if constexpr (std::is_enum_v<id_type>)
+        return static_cast<difference_type>(static_cast<underlying_type>(l.id_) - static_cast<underlying_type>(r.id_));
+      else return static_cast<difference_type>(l.id_ - r.id_);
+    }
     friend bool operator==(const iterator &l, const iterator &r) noexcept { return l.id_ == r.id_; }
     friend bool operator!=(const iterator &l, const iterator &r) noexcept { return !(l == r); }
-    friend auto operator<=>(const iterator &l, const iterator &r) noexcept { return l.id_ <=> r.id_; }
+    friend auto operator<=>(const iterator &l, const iterator &r) noexcept {
+      if constexpr (std::is_enum_v<id_type>)
+        return static_cast<underlying_type>(l.id_) <=> static_cast<underlying_type>(r.id_);
+      else return l.id_ <=> r.id_;
+    }
 
     view_type view() const noexcept { return table_.get(id_); }
     reference operator*() const noexcept { return view(); }
@@ -102,13 +115,13 @@ public:
     id_type id_;
   };
 
-  basic_symbol_table(size_type growth_bytes = 1024) noexcept : pool_(growth_bytes), symbol_to_id_(0, pool_, pool_) {}
-  template <std::ranges::input_range R> requires std::convertible_to<std::ranges::range_reference_t<R>, view_type>
-  basic_symbol_table(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate, R &&symbols = {},
-                     size_type growth_bytes = 1024) : basic_symbol_table(growth_bytes) { open(path, mode, symbols); }
+  basic_symbol_table(size_type growth_bytes = 1_KB) noexcept : pool_(growth_bytes), symbol_to_id_(0, pool_, pool_) {}
   basic_symbol_table(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate,
-                     std::initializer_list<view_type> symbols = {}, size_type growth_bytes = 1024)
-    : basic_symbol_table(path, mode, std::views::all(symbols), growth_bytes) {}
+                     std::span<const view_type> symbols = {}, size_type growth_bytes = 1_KB)
+    : basic_symbol_table(growth_bytes) { open(path, mode, symbols); }
+  basic_symbol_table(const std::filesystem::path &path, open_mode mode, std::initializer_list<view_type> symbols,
+                     size_type growth_bytes = 1_KB)
+    : basic_symbol_table(path, mode, std::span(symbols), growth_bytes) {}
   basic_symbol_table(const basic_symbol_table &) = delete;
   basic_symbol_table &operator=(const basic_symbol_table &) = delete;
   basic_symbol_table(basic_symbol_table &&) noexcept = default;
@@ -125,26 +138,27 @@ public:
     }
   }
 
-  template <std::ranges::input_range R> requires std::convertible_to<std::ranges::range_reference_t<R>, view_type>
-  void create(const std::filesystem::path &path, R &&symbols = {}) {
+  void create(const std::filesystem::path &path, std::span<const view_type> symbols = {}) {
     close();
     pool_.create(path);
     for (auto symbol : symbols) intern(symbol);
   }
 
-  void create(const std::filesystem::path &path,
-              std::initializer_list<view_type> symbols = {}) { create(path, std::views::all(symbols)); }
+  void create(const std::filesystem::path &path, std::initializer_list<view_type> symbols) {
+    create(path, std::span(symbols));
+  }
 
-  template <std::ranges::input_range R> requires std::convertible_to<std::ranges::range_reference_t<R>, view_type>
-  void open(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate, R &&symbols = {}) {
+  void open(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate,
+            std::span<const view_type> symbols = {}) {
     if (mode == open_mode::kLoad) load(path);
     else if (mode == open_mode::kCreate) create(path, symbols);
     else if (mode == open_mode::kLoadOrCreate) std::filesystem::exists(path) ? load(path) : create(path, symbols);
     else throw std::invalid_argument("Invalid open_mode.");
   }
 
-  void open(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate,
-            std::initializer_list<view_type> symbols = {}) { open(path, mode, std::views::all(symbols)); }
+  void open(const std::filesystem::path &path, open_mode mode, std::initializer_list<view_type> symbols) {
+    open(path, mode, std::span(symbols));
+  }
 
   void close() {
     pool_.close();
@@ -170,7 +184,11 @@ public:
   const_reverse_iterator crbegin() const noexcept { return rbegin(); }
   const_reverse_iterator crend() const noexcept { return rend(); }
 
-  view_type get(id_type id) const noexcept { return pool_.get(symbols_[id]); }
+  view_type get(id_type id) const noexcept {
+    if constexpr (std::is_enum_v<id_type>)
+      return pool_.get(symbols_[static_cast<size_type>(static_cast<underlying_type>(id))]);
+    else return pool_.get(symbols_[static_cast<size_type>(id)]);
+  }
   view_type lookup(id_type id) const noexcept { return get(id); }
   view_type operator[](id_type id) const noexcept { return get(id); }
 

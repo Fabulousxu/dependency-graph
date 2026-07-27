@@ -11,12 +11,11 @@
 #include <system_error>
 #include <utility>
 #include <mio/mio.hpp>
+#include "config.hpp"
+#include "types.hpp"
+#include "utils.hpp"
 
 namespace xpg {
-
-enum class open_mode { kLoad, kCreate, kLoadOrCreate };
-inline constexpr std::size_t kDefaultGrowthBytes = 1024 * 1024;
-constexpr std::size_t alignup(std::size_t n, std::size_t align) { return (n + align - 1) / align * align; }
 
 template <class T>
 class mmap_vector {
@@ -33,9 +32,9 @@ public:
   using reverse_iterator = std::reverse_iterator<iterator>;
   using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-  mmap_vector(size_type growth_bytes = kDefaultGrowthBytes) noexcept : growth_bytes_(growth_bytes) {}
+  mmap_vector(size_type growth_bytes = kGrowthBytes) noexcept : growth_bytes_(growth_bytes) {}
   mmap_vector(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate,
-              size_type growth_bytes = kDefaultGrowthBytes) : growth_bytes_(growth_bytes) { open(path, mode); }
+              size_type growth_bytes = kGrowthBytes) : growth_bytes_(growth_bytes) { open(path, mode); }
   mmap_vector(const mmap_vector &) = delete;
   mmap_vector &operator=(const mmap_vector &) = delete;
   mmap_vector(mmap_vector &&) noexcept = default;

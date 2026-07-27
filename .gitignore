@@ -12,5 +12,5 @@ data/repos/*
 !data/repos/repoconfig-dep11m.json
 !data/repos/repoconfig-dep28m.json
 !data/repos/repoconfig-rpm.json
-reports/profiles/
+reports/profiling/
 reports/figures/

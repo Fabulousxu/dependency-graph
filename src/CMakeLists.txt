@@ -1,26 +1,32 @@
 add_library(libxpgraph STATIC
         ${PROJECT_SOURCE_DIR}/thirdparty/pugixml/pugixml.cpp
-        storage_graph.cpp
-        buffer_graph.cpp
-        data_model.cu
-        cache_graph.cu
+        config.cu
+        write_buffer.cpp
+        cuda_cache.cu
+        mgxpgraph.cpp
         xpgraph.cpp
         package_loader.cpp
 )
+target_include_directories(libxpgraph PRIVATE ${PROJECT_SOURCE_DIR}/thirdparty/pugixml)
+target_link_libraries(libxpgraph PUBLIC mgclient_cpp)
 set_target_properties(libxpgraph PROPERTIES POSITION_INDEPENDENT_CODE ON PREFIX "")
 
 add_executable(console console.cpp)
 target_link_libraries(console PRIVATE libxpgraph)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-execute_process(
-        COMMAND "${Python3_EXECUTABLE}" -c "import sysconfig; print (sysconfig.get_config_var ('MULTIARCH') or '') "
-        OUTPUT_VARIABLE PYTHON3_MULTIARCH
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-)
 add_library(pyxpgraph MODULE python_binding.cpp)
 target_include_directories(pyxpgraph PRIVATE ${Python3_INCLUDE_DIRS})
 target_link_libraries(pyxpgraph PRIVATE libxpgraph Python3::Python)
-target_compile_options(pyxpgraph PRIVATE -I/usr/include -I/usr/include/${PYTHON3_MULTIARCH})
-set_target_properties(pyxpgraph PROPERTIES PREFIX "" OUTPUT_NAME "pyxpgraph"
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python)
+set_target_properties(pyxpgraph PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python)
+
+add_library(qmxpgraph SHARED query_module.cpp config.cu)
+target_include_directories(qmxpgraph PRIVATE
+        "$ENV{HOME}/opt/memgraph-3.12.0/usr/include"
+        "$ENV{HOME}/opt/memgraph-3.12.0-source/include"
+)
+set_target_properties(qmxpgraph PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        PREFIX ""
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/query_modules
+)

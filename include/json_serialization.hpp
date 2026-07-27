@@ -1,6 +1,12 @@
 #pragma once
+#include <cstddef>
+#include <concepts>
+#include <deque>
+#include <ranges>
+#include <string>
+#include <variant>
 #include <nlohmann/json.hpp>
-#include "data_model.hpp"
+#include "config.hpp"
 #include "package_loader.hpp"
 
 namespace xpg {
@@ -16,7 +22,7 @@ void to_json(Json &j, const DependencyTree &tree) {
   j["name"] = tree.name;
   j["type"] = tree.type;
   j["version_constraint"] = tree.version_constraint;
-  j["architecture"] = tree.architecture;
+  j["architecture"] = tree.architecture_constraint;
   auto &jdependencies = j["dependencies"];
   jdependencies["single_dependencies"] = tree.single_dependencies;
   jdependencies["alternative_dependencies"] = tree.alternative_dependencies;
@@ -60,12 +66,51 @@ void to_json(Json &j, const RepositoryInfo &info) {
 }
 
 template <class Json>
+void from_json(const Json &j, DependencyTree &tree, std::deque<std::string> &arena) {
+  tree.name = arena.emplace_back(j.at("name").template get<std::string>());
+  tree.type = arena.emplace_back(j.at("type").template get<std::string>());
+  tree.version_constraint = arena.emplace_back(j.at("version_constraint").template get<std::string>());
+  tree.architecture_constraint = arena.emplace_back(j.at("architecture").template get<std::string>());
+  const auto &dependencies = j.at("dependencies");
+  for (const auto &child : dependencies.at("single_dependencies"))
+    from_json(child, tree.single_dependencies.emplace_back(), arena);
+  for (const auto &group : dependencies.at("alternative_dependencies")) {
+    auto &tree_group = tree.alternative_dependencies.emplace_back();
+    for (const auto &child : group) from_json(child, tree_group.emplace_back(), arena);
+  }
+}
+
+template <class Json>
+void from_json(const Json &j, DependencyInfo &info, std::deque<std::string> &arena) {
+  info.name = arena.emplace_back(j.at("name").template get<std::string>());
+  info.type = arena.emplace_back(j.at("type").template get<std::string>());
+  info.version_constraint = arena.emplace_back(j.at("version_constraint").template get<std::string>());
+  info.architecture_constraint = arena.emplace_back(j.at("architecture").template get<std::string>());
+}
+
+template <class Json>
+void from_json(const Json &j, DependencyLevel &level, std::deque<std::string> &arena) {
+  for (const auto &item : j.at("single_dependencies"))
+    from_json(item, level.single_dependencies.emplace_back(), arena);
+  for (const auto &group : j.at("alternative_dependencies")) {
+    auto &dependencies = level.alternative_dependencies.emplace_back();
+    for (const auto &item : group) from_json(item, dependencies.emplace_back(), arena);
+  }
+}
+
+template <class Json>
+void from_json(const Json &j, DependencyFlat &flat, std::deque<std::string> &arena) {
+  for (auto i : std::views::iota(0ull, j.size()))
+    from_json(j.at("depth " + std::to_string(i + 1)), flat.emplace_back(), arena);
+}
+
+template <class Json>
 void from_json(const Json &j, RepositoryInfo &info) {
   info.enabled = j.value("enabled", true);
-  auto type = j.value("type", std::string("DEB"));
+  std::string type = j.at("type");
   if (type == "DEB" || type == "deb") info.type = kDEB;
   else if (type == "RPM" || type == "rpm") info.type = kRPM;
-  info.urls = j.value("urls", decltype(info.urls){});
+  info.urls = j.at("urls");
   info.distributions = j.value("distributions", decltype(info.distributions){});
   info.architectures = j.value("architectures", decltype(info.architectures){});
 }

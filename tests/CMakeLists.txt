@@ -1,5 +1,5 @@
 add_executable(query_dependencies_correctness_test query_dependencies_correctness_test.cpp)
 target_link_libraries(query_dependencies_correctness_test PRIVATE libxpgraph)
 
-add_executable(query_dependencies_profile query_dependencies_profile.cpp)
-target_link_libraries(query_dependencies_profile PRIVATE libxpgraph)
+add_executable(query_dependencies_profiling query_dependencies_profiling.cpp)
+target_link_libraries(query_dependencies_profiling PRIVATE libxpgraph)

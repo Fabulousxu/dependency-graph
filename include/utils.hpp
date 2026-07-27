@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <format>
 #include <functional>
@@ -13,6 +14,19 @@
 #include <utility>
 
 namespace xpg {
+
+using cuda_size_t = unsigned long long;
+
+constexpr std::size_t operator""_KB(unsigned long long value) { return value * 1024; }
+constexpr std::size_t operator""_MB(unsigned long long value) { return value * 1024_KB; }
+constexpr std::size_t operator""_GB(unsigned long long value) { return value * 1024_GB; }
+constexpr std::size_t operator""_TB(unsigned long long value) { return value * 1024_TB; }
+constexpr long double operator""_KB(long double value) { return value * 1024.0; }
+constexpr long double operator""_MB(long double value) { return value * 1024.0_KB; }
+constexpr long double operator""_GB(long double value) { return value * 1024.0_MB; }
+constexpr long double operator""_TB(long double value) { return value * 1024.0_GB; }
+
+constexpr std::size_t alignup(std::size_t n, std::size_t align) { return (n + align - 1) / align * align; }
 
 constexpr std::string_view trim_prefix(std::string_view str) noexcept {
   auto first = str.find_first_not_of(" \t\n\r\f\v");
@@ -105,7 +119,7 @@ auto measure_time(F &&f, Args &&... args) {
     auto end = std::chrono::high_resolution_clock::now();
     return std::chrono::duration_cast<Duration>(end - start);
   } else {
-    Ret &&result = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
+    Ret result = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
     auto end = std::chrono::high_resolution_clock::now();
     return std::pair<Ret, Duration>(std::forward<Ret>(result), std::chrono::duration_cast<Duration>(end - start));
   }
