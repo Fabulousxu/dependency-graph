@@ -69,9 +69,9 @@ public:
     const basic_string_pool &pool_;
   };
 
-  basic_string_pool(size_type growth_bytes = kDefaultGrowthBytes) noexcept : pool_(growth_bytes) {}
+  basic_string_pool(size_type growth_bytes = kGrowthBytes) noexcept : pool_(growth_bytes) {}
   basic_string_pool(const std::filesystem::path &path, open_mode mode = open_mode::kLoadOrCreate,
-                    size_type growth_bytes = kDefaultGrowthBytes) : pool_(growth_bytes) { open(path, mode); }
+                    size_type growth_bytes = kGrowthBytes) : pool_(growth_bytes) { open(path, mode); }
   basic_string_pool(const basic_string_pool &) = delete;
   basic_string_pool &operator=(const basic_string_pool &) = delete;
   basic_string_pool(basic_string_pool &&) noexcept = default;

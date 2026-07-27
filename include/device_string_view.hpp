@@ -10,10 +10,12 @@
 #include <string_view>
 #include <type_traits>
 
+#ifndef HOST_DEVICE
 #ifdef __CUDACC__
 #define HOST_DEVICE __host__ __device__
 #else
 #define HOST_DEVICE
+#endif
 #endif
 
 namespace xpg {

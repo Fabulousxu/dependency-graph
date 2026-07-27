@@ -5,15 +5,11 @@
 #include <variant>
 #include <vector>
 #include "config.hpp"
-#include "data_model.hpp"
+#include "types.hpp"
 
 namespace xpg {
 
-using cuda_size_t = unsigned long long;
-inline constexpr std::size_t kMaxDeviceVectorBytes = 64 * MiB;
-template <class T> inline constexpr std::size_t kMaxDeviceVectorSize = kMaxDeviceVectorBytes / sizeof(T);
-
-class CacheGraph {
+class CudaCache {
 public:
   using VisitedMark = std::uint32_t;
   using TreeId = std::uint32_t;
@@ -24,9 +20,9 @@ public:
   };
 
   struct VersionNode {
-    ArchitectureId architecture;
-    StringOffset version_offset;
+    StringId version_id;
     StringLength version_length;
+    ArchitectureType architecture;
     DependencyCount dependency_count;
     DependencyId dependency_begin;
   };
@@ -34,19 +30,19 @@ public:
   struct DependencyEdge {
     DependencyId original;
     PackageId to_package;
-    StringOffset version_constraint_offset;
+    StringId version_constraint_id;
     StringLength version_constraint_length;
-    ArchitectureId architecture_constraint;
+    ArchitectureType architecture_constraint;
     DependencyType type;
-    GroupId group;
+    DependencyGroupId group;
   };
 
-  CacheGraph(const StorageGraph &storage_graph) noexcept;
-  CacheGraph(const CacheGraph &) = delete;
-  CacheGraph &operator=(const CacheGraph &) = delete;
-  CacheGraph(CacheGraph &&) noexcept = default;
-  CacheGraph &operator=(CacheGraph &&) noexcept = delete;
-  ~CacheGraph() { clear(); }
+  CudaCache(const XPGraph &graph) noexcept;
+  CudaCache(const CudaCache &) = delete;
+  CudaCache &operator=(const CudaCache &) = delete;
+  CudaCache(CudaCache &&other) noexcept;
+  CudaCache &operator=(CudaCache &&other) noexcept;
+  ~CudaCache() { clear(); }
 
   void build();
   void clear();
@@ -54,16 +50,16 @@ public:
 
   std::variant<DependencyTree, DependencyFlat> query_dependencies(
     std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
-    bool filter_architecture, bool filter_version, bool expand_alternative) const;
+    bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const;
   DependencyTree query_dependency_tree(
     std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
-    bool filter_architecture, bool filter_version, bool expand_alternative) const;
+    bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const;
   DependencyFlat query_dependency_flat(
     std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
-    bool filter_architecture, bool filter_version, bool expand_alternative) const;
+    bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const;
 
 private:
-  const StorageGraph &storage_graph_;
+  const XPGraph &graph_;
   std::vector<VersionId> to_cache_version_id_;
   PackageNode *package_nodes_;
   VersionNode *version_nodes_;
@@ -80,8 +76,13 @@ private:
   VisitedMark *visited_;
   mutable VisitedMark mark_;
 
-  std::vector<VersionId> init_frontier(std::string_view name, std::string_view version,
-                                       std::string_view architecture) const;
+  struct BuildTreeNode {
+    DependencyTree value;
+    std::vector<TreeId> single_dependencies;
+    std::vector<std::vector<TreeId>> alternative_dependencies;
+  };
+
+  std::vector<VersionId> init_frontier(std::string_view name, std::string_view version, ArchitectureType arch) const;
 };
 
 } // namespace xpg

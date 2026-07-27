@@ -1,42 +1,82 @@
 name: CI
 
 on:
+  push: {}
+  pull_request: {}
   workflow_dispatch:
+    inputs:
+      run_correctness_test:
+        description: Run query dependency correctness test with local repository cache
+        required: false
+        default: false
+        type: boolean
+      preset:
+        description: Repository preset for the optional correctness test
+        required: false
+        default: dep5m
+        type: choice
+        options:
+          - dep5m
+          - dep11m
+          - dep28m
+      sample_size:
+        description: Sample size for the optional correctness test
+        required: false
+        default: "20"
+        type: string
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux]
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          submodules: recursive
+
+      - name: Show toolchain
+        run: |
+          cmake --version
+          ninja --version
+          nvcc --version
+
+      - name: Configure
+        run: |
+          cmake --preset Release
 
       - name: Build
-        shell: powershell
         run: |
-          mkdir build -Force
-          cd build
-          cmake -G Ninja ..
-          ninja
+          cmake --build build/release -j"$(nproc)"
 
-      - name: Query Dependencies Correctness Test
-        shell: powershell
-        working-directory: build
+      - name: Verify build outputs
         run: |
-          ./query_dependencies_correctness_test `
-            --dataset E:/MyProjects/dependency-graph/datasets/repos-50.jsonl `
-            --load-dir E:/MyProjects/dependency-graph/data/repos-50 `
-            --trials 200 `
-            --max-depth 10 `
-            --output ./results/query_dependencies_correctness_test_result.json
+          test -x build/release/bin/console
+          test -x build/release/bin/query_dependencies_correctness_test
+          test -x build/release/bin/query_dependencies_benchmark
+          test -x build/release/bin/query_dependencies_profiling
+          test -f build/release/lib/libxpgraph.a
+          test -f build/release/python/pyxpgraph.so
+          test -f build/release/query_modules/qmxpgraph.so
 
-      - name: Query Dependencies Benchmark
-        shell: powershell
-        working-directory: build
+      - name: Query dependencies correctness test
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_correctness_test }}
+        env:
+          REPO_CACHE_DIR: ${{ github.workspace }}/data/repos
         run: |
-          ./query_dependencies_benchmark `
-            --dataset E:/MyProjects/dependency-graph/datasets/repos-200.jsonl `
-            --load-dir E:/MyProjects/dependency-graph/data/repos-200 `
-            --trials 200 `
-            --max-depth 10 `
-            --memory-limit 1024 `
-            --output ./results/query_dependencies_benchmark_200_result.json
+          bash scripts/reproduce.sh prepare --preset "${{ inputs.preset }}"
+          bash scripts/reproduce.sh test \
+            --preset "${{ inputs.preset }}" \
+            --sample-size "${{ inputs.sample_size }}"
+
+      - name: Upload reports
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.run_correctness_test }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpgraph-reports
+          path: reports/
+          if-no-files-found: ignore

@@ -152,7 +152,7 @@ Open an existing graph or create it if it does not exist:
 ```sh
 build/release/bin/console \
   --open-mode load-or-create \
-  --data-directory data/xpg/example
+  --data-directory data/xpgraph/example
 ```
 
 Create a graph and load repositories from a prepared metadata cache:
@@ -160,7 +160,7 @@ Create a graph and load repositories from a prepared metadata cache:
 ```sh
 build/release/bin/console \
   --open-mode create \
-  --data-directory data/xpg/example \
+  --data-directory data/xpgraph/example \
   --repository-config data/repos/repoconfig.json \
   --cache-directory data/repos
 ```
@@ -213,7 +213,7 @@ Example:
 #include "json_serialization.hpp"
 
 int main() {
-  xpg::XPGraph graph("data/xpg/example", xpg::open_mode::kLoadOrCreate);
+  xpg::XPGraph graph("data/xpgraph/example", xpg::open_mode::kLoadOrCreate);
 
   // PackageLoader parses repository metadata and writes packages
   // into XPGraph's in-memory buffer first.
@@ -248,8 +248,8 @@ int main() {
   // The boolean arguments mean:
   //   tree = true
   //   use_gpu = true
-  //   match_architecture = true
-  //   match_version = true
+  //   satisfy_architecture = true
+  //   satisfy_version = true
   //   expand_alternative = true
   auto dependencies = graph.query_dependencies(
     "adduser", "3.134", "all", 3, true, true, true, true, true
@@ -270,8 +270,8 @@ The most important `query_dependencies` options are:
 - `depth`: maximum dependency traversal depth.
 - `tree`: return nested dependency tree when true; return per-depth flat levels when false.
 - `use_gpu`: use the GPU cache for traversal when true.
-- `match_architecture`: filter dependencies by architecture constraints.
-- `match_version`: filter dependencies by version constraints.
+- `satisfy_architecture`: only select dependencies satisfying architecture constraints.
+- `satisfy_version`: only select dependencies satisfying version constraints.
 - `expand_alternative`: expand alternative dependency groups when true.
 
 ---
@@ -291,7 +291,7 @@ Then open an existing XPGraph data directory and run queries:
 ```python
 from pyxpgraph import XPGraph
 
-graph = XPGraph("data/xpg/example", open_mode="load")
+graph = XPGraph("data/xpgraph/example", open_mode="load")
 
 print(graph.package_count())
 print(graph.version_count())
@@ -313,8 +313,8 @@ dependencies = graph.query_dependencies(
     depth=3,
     tree=True,
     use_gpu=False,
-    match_architecture=True,
-    match_version=True,
+    satisfy_architecture=True,
+    satisfy_version=True,
     expand_alternative=True,
 )
 
@@ -325,7 +325,7 @@ graph.close()
 
 `query_versions` returns a list of dictionaries with `version` and `architecture` fields. `query_dependencies` returns a Python dictionary in the same structure as the C++ JSON serialization: tree mode returns nested dependencies, while flat mode groups dependencies by depth.
 
-The Python binding currently supports only `open_mode="load"`. It does not expose `PackageLoader`, repository metadata loading, graph creation, or `load-or-create` behavior. Prepare graph data first with the console application, C++ API, or `scripts/reproduce.sh prepare <preset>`, then open the generated data directory from Python.
+The Python binding currently supports only `open_mode="load"`. It does not expose `PackageLoader`, repository metadata loading, graph creation, or `load-or-create` behavior. Prepare graph data first with the console application, C++ API, or `scripts/reproduce.sh prepare --preset <preset>`, then open the generated data directory from Python.
 
 ---
 
@@ -334,17 +334,17 @@ The Python binding currently supports only `open_mode="load"`. It does not expos
 The project includes correctness tests, benchmarks, and profiling helpers. The `scripts/reproduce.sh` wrapper expects the release build to exist and supports predefined data presets:
 
 ```sh
-bash scripts/reproduce.sh prepare dep5m
-bash scripts/reproduce.sh console dep5m
-bash scripts/reproduce.sh test dep5m 100
-bash scripts/reproduce.sh benchmark dep5m 200
+bash scripts/reproduce.sh prepare --preset dep5m
+bash scripts/reproduce.sh console --preset dep5m
+bash scripts/reproduce.sh test --preset dep5m --sample-size 100
+bash scripts/reproduce.sh benchmark --preset dep5m --sample-size 200
 ```
 
 Profiling uses the `RelWithDebInfo` build and Linux `perf`:
 
 ```sh
-bash scripts/reproduce.sh perf dep5m 10 tree cpu 120
-bash scripts/reproduce.sh perf dep5m 10 flat gpu 120
+bash scripts/reproduce.sh perf --preset dep5m --depth 10 --format tree --mode cpu --time 120
+bash scripts/reproduce.sh perf --preset dep5m --depth 10 --format flat --mode gpu --time 120
 ```
 
 Generated reports are written under `reports/` by default. Existing benchmark,
@@ -358,6 +358,7 @@ or GPU execution modes.
 
 - Current version: v2.1
 - Main API: `xpg::XPGraph` and `xpg::PackageLoader`
+- Graph interface: `xpg::BaseGraph`, implemented by `xpg::XPGraph` and `xpg::MGXPGraph`
 - Supported metadata formats: DEB `Packages` and RPM `primary.xml`
 - Supported query modes: package list, version list, dependency tree, and
   dependency flat levels

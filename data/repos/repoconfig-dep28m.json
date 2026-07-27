@@ -20,7 +20,7 @@
   "ubuntu": {
     "enabled": true,
     "type": "DEB",
-    "url": [
+    "urls": [
       "https://archive.ubuntu.com/ubuntu",
       "https://old-releases.ubuntu.com/ubuntu",
       "https://mirror.sjtu.edu.cn/ubuntu"
@@ -40,7 +40,7 @@
   "openkylin": {
     "enabled": true,
     "type": "DEB",
-    "url": ["https://mirror.sjtu.edu.cn/openkylin"],
+    "urls": ["https://mirror.sjtu.edu.cn/openkylin"],
     "distributions": ["huanghe", "nile", "yangtze"],
     "architectures": ["amd64", "arm64", "i386", "loong64", "riscv64", "rv64g"]
   }

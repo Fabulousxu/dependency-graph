@@ -16,7 +16,9 @@
 #include <nlohmann/json.hpp>
 #include "config.hpp"
 #include "json_serialization.hpp"
-#include "util.hpp"
+#include "mgxpgraph.hpp"
+#include "utils.hpp"
+#include "xpgraph.hpp"
 
 namespace xpg {
 
@@ -135,7 +137,7 @@ auto RpmBoolDependencyParser::parse_primary() -> std::variant<Expression, Depend
     auto cmp = std::string(std::get<std::string_view>(token_.value)).append(" ");
     token_ = consume();
     if (token_.type != kWord) throw std::runtime_error("Expected RPM dependency version.");
-    info.version_constraint = tmpstr_.emplace_back(std::move(cmp.append(std::get<std::string_view>(token_.value))));
+    info.version_constraint = arena_.emplace_back(std::move(cmp.append(std::get<std::string_view>(token_.value))));
     token_ = consume();
   }
   return info;
@@ -177,25 +179,32 @@ PackageInfo PackageLoader::parse_deb_package(std::string_view package) {
   if (result.name.empty()) throw std::runtime_error("Missing DEB package name.");
   result.version = fields.at("Version");
   result.architecture = fields.at("Architecture");
-  for (const auto &[field, type] : kDebDependencyTypeMap)
+  for (const auto &[field, type] : kDebDependencyTypes) {
+    auto dtype = kDependencyTypes[static_cast<std::size_t>(type)];
     if (auto it = fields.find(field); it != fields.end())
       for (auto group : it->second | std::views::split(','))
         if (auto items = group | std::views::split('|'); std::ranges::distance(items) > 1) {
           result.alternative_dependencies.emplace_back();
           for (auto item : items) {
-            auto info = parse_deb_dependency({item.begin(), item.end()}, type, result.architecture);
+            auto iview = trim({item.begin(), item.end()});
+            if (iview.empty()) continue;
+            auto info = parse_deb_dependency(iview, dtype, result.architecture);
             result.alternative_dependencies.back().emplace_back(std::move(info));
           }
         } else {
-          auto info = parse_deb_dependency({group.begin(), group.end()}, type, result.architecture);
+          auto iview = trim({group.begin(), group.end()});
+          if (iview.empty()) continue;
+          auto info = parse_deb_dependency(iview, dtype, result.architecture);
           result.single_dependencies.emplace_back(std::move(info));
         }
+  }
   return result;
 }
 
 DependencyInfo PackageLoader::parse_deb_dependency(std::string_view dependency, std::string_view type,
                                                    std::string_view arch) {
-  DependencyInfo info{.type = type};
+  DependencyInfo info;
+  info.type = type;
   auto lpar = dependency.find('(');
   if (lpar != std::string_view::npos) {
     auto rpar = dependency.rfind(')');
@@ -211,22 +220,24 @@ DependencyInfo PackageLoader::parse_deb_dependency(std::string_view dependency, 
   return info;
 }
 
-PackageInfo PackageLoader::parse_rpm_package(const pugi::xml_node &package, std::deque<std::string> &tmpstr) {
+PackageInfo PackageLoader::parse_rpm_package(const pugi::xml_node &package) const {
   PackageInfo result;
   result.name = package.child("name").child_value();
   if (result.name.empty()) throw std::runtime_error("Missing RPM package name.");
   result.architecture = package.child("arch").child_value();
   auto version = package.child("version");
   result.version = parse_rpm_version(version.attribute("epoch").value(), version.attribute("ver").value(),
-                                     version.attribute("rel").value(), tmpstr);
+                                     version.attribute("rel").value());
   auto format = package.child("format");
   if (!format) return result;
-  for (const auto &[field, type] : kRpmDependencyTypeMap)
+  for (const auto &[field, type] : kRpmDependencyTypes) {
+    auto dtype = kDependencyTypes[static_cast<std::size_t>(type)];
     if (auto dependencies = format.child(field.data()))
       for (auto entry : dependencies.children("rpm:entry")) {
         auto name = std::string_view(entry.attribute("name").value());
         if (name.starts_with('(')) {
-          for (auto group : RpmBoolDependencyParser(type, result.architecture, tmpstr).parse(name))
+          RpmBoolDependencyParser parser(dtype, result.architecture, arena_);
+          for (auto group : parser.parse(name))
             if (group.size() == 1) {
               result.alternative_dependencies.emplace_back();
               for (auto &info : group) result.alternative_dependencies.back().emplace_back(std::move(info));
@@ -234,30 +245,32 @@ PackageInfo PackageLoader::parse_rpm_package(const pugi::xml_node &package, std:
         } else {
           DependencyInfo info;
           info.name = name;
-          info.type = type;
+          info.type = dtype;
           info.architecture_constraint = result.architecture;
           auto flags = std::string_view(entry.attribute("flags").value());
           if (!flags.empty()) {
-            auto it = kRpmFlagsMap.find(flags);
-            if (it == kRpmFlagsMap.end())
+            auto it = kRpmFlags.find(flags);
+            if (it == kRpmFlags.end())
               throw std::runtime_error(std::format("Unknown RPM dependency flags: {}", flags));
-            auto version = parse_rpm_version(
-              entry.attribute("epoch").value(), entry.attribute("ver").value(), entry.attribute("rel").value(), tmpstr);
-            info.version_constraint = tmpstr.emplace_back(std::format("{} {}", it->second, version));
+            auto version = parse_rpm_version(entry.attribute("epoch").value(), entry.attribute("ver").value(),
+                                             entry.attribute("rel").value());
+            info.version_constraint = arena_.emplace_back(std::format("{} {}", it->second, version));
           }
           result.single_dependencies.emplace_back(std::move(info));
         }
       }
+  }
+
   return result;
 }
 
-std::string_view PackageLoader::parse_rpm_version(std::string_view epoch, std::string_view ver, std::string_view rel,
-                                                  std::deque<std::string> &tmpstr) {
+std::string_view PackageLoader::parse_rpm_version(std::string_view epoch, std::string_view ver,
+                                                  std::string_view rel) const {
   std::string result;
   if (!epoch.empty() && epoch != "0") result.append(epoch).append(":");
   result.append(ver);
   if (!rel.empty()) result.append("-").append(rel);
-  return tmpstr.emplace_back(std::move(result));
+  return arena_.emplace_back(std::move(result));
 }
 
 bool PackageLoader::load_packages(const std::filesystem::path &path, RepositoryType type, bool flush_if_needed,
@@ -283,9 +296,10 @@ bool PackageLoader::load_packages(const std::filesystem::path &path, RepositoryT
       return false;
     }
   }
-  auto pcount = graph_.buffer_package_count();
-  auto vcount = graph_.buffer_version_count();
-  auto dcount = graph_.buffer_dependency_count();
+  auto *xpgraph = dynamic_cast<XPGraph *>(&graph_);
+  auto pcount = xpgraph ? xpgraph->package_count_in_buffer() : graph_.package_count();
+  auto vcount = xpgraph ? xpgraph->version_count_in_buffer() : graph_.version_count();
+  auto dcount = xpgraph ? xpgraph->dependency_count_in_buffer() : graph_.dependency_count();
   if (verbose) print("Loading {} file: {}... ", type == kDEB ? "DEB packages" : "RPM primary XML", path.string());
   auto time = measure_time<std::chrono::milliseconds>([&, this, type, verbose] {
     if (type == kDEB) {
@@ -298,39 +312,46 @@ bool PackageLoader::load_packages(const std::filesystem::path &path, RepositoryT
         auto view = std::string_view{pkg.begin(), pkg.end()};
         if (view.empty()) continue;
         try {
-          graph_.create_package(parse_deb_package(view));
+          if (xpgraph) xpgraph->create_package_in_buffer(parse_deb_package(view));
+          else graph_.create_package(parse_deb_package(view));
         } catch (const std::exception &e) {
           if (verbose) println(std::cerr, "  Skipped malformed DEB package: {}", e.what());
         }
       }
     } else
       for (auto pkg : rpm_root.children("package")) {
-        std::deque<std::string> tmpstr;
         try {
-          graph_.create_package(parse_rpm_package(pkg, tmpstr));
+          if (xpgraph) xpgraph->create_package_in_buffer(parse_rpm_package(pkg));
+          else graph_.create_package(parse_rpm_package(pkg));
+          arena_.clear();
         } catch (const std::exception &e) {
           if (verbose) println(std::cerr, "  Skipped malformed RPM package: {}", e.what());
         }
       }
   });
   if (verbose) println("Done. ({} ms)", time.count());
-  pcount = graph_.buffer_package_count() - pcount;
-  vcount = graph_.buffer_version_count() - vcount;
-  dcount = graph_.buffer_dependency_count() - dcount;
-  if (flush_if_needed)
-    if (auto memory_usage = graph_.estimated_memory_usage(); memory_usage >= graph_.memory_limit()) {
+  pcount = (xpgraph ? xpgraph->package_count_in_buffer() : graph_.package_count()) - pcount;
+  vcount = (xpgraph ? xpgraph->version_count_in_buffer() : graph_.version_count()) - vcount;
+  dcount = (xpgraph ? xpgraph->dependency_count_in_buffer() : graph_.dependency_count()) - dcount;
+  if (xpgraph && flush_if_needed)
+    if (auto memory_usage = xpgraph->estimated_memory_usage(); memory_usage >= xpgraph->flush_limit_bytes()) {
       if (verbose)
         print("  Estimated memory usage {:.1f} MiB exceeded limit {} MiB.\n  Flushing to disk... ",
-              memory_usage / MiBd, graph_.memory_limit() / MiB);
-      auto flush_time = measure_time<std::chrono::milliseconds>([this] { graph_.flush_buffer(); });
+              memory_usage / 1.0_MB, xpgraph->flush_limit_bytes() / 1_MB);
+      auto flush_time = measure_time<std::chrono::milliseconds>([=] { xpgraph->flush_buffer(); });
       if (verbose) println("Done. ({:.3f} s)", flush_time.count() / 1000.0);
     }
   if (verbose) {
     println("  Loaded: + {} packages, + {} versions, + {} dependencies.", pcount, vcount, dcount);
-    println("  Total: {} packages, {} versions, {} dependencies (buffer)",
-            graph_.buffer_package_count(), graph_.buffer_version_count(), graph_.buffer_dependency_count());
-    println("         {} packages, {} versions, {} dependencies (disk)",
-            graph_.package_count(), graph_.version_count(), graph_.dependency_count());
+    if (xpgraph) {
+      println("  Total: {} packages, {} versions, {} dependencies (buffer)",
+              xpgraph->package_count_in_buffer(), xpgraph->version_count_in_buffer(),
+              xpgraph->dependency_count_in_buffer());
+      println("         {} packages, {} versions, {} dependencies (disk)",
+              xpgraph->package_count(), xpgraph->version_count(), xpgraph->dependency_count());
+    } else
+      println("  Total: {} packages, {} versions, {} dependencies",
+              graph_.package_count(), graph_.version_count(), graph_.dependency_count());
   }
   return true;
 }
@@ -378,36 +399,71 @@ std::pair<std::size_t, std::size_t> PackageLoader::load_repositories(const std::
 }
 
 void PackageLoader::flush_buffer(bool update_if_exists, bool verbose) const {
+  auto *xpgraph = dynamic_cast<XPGraph *>(&graph_);
+  if (!xpgraph) {
+    println(std::cerr, "flush_buffer is only supported for XPGraph.");
+    return;
+  }
   if (verbose) print("Flushing to disk... ");
-  auto time = xpg::measure_time<std::chrono::milliseconds>([=, this] { graph_.flush_buffer(update_if_exists); });
+  auto time = xpg::measure_time<std::chrono::milliseconds>([=] { xpgraph->flush_buffer(update_if_exists); });
   if (verbose) {
     println("Done. ({:.3f} s)", time.count() / 1000.0);
     println("  Total: {} packages, {} versions, {} dependencies (disk)",
-            graph_.package_count(), graph_.version_count(), graph_.dependency_count());
+            xpgraph->package_count(), xpgraph->version_count(), xpgraph->dependency_count());
   }
 }
 
 void PackageLoader::build_cache(bool verbose) const {
+  auto *xpgraph = dynamic_cast<XPGraph *>(&graph_);
+  if (!xpgraph) {
+    println(std::cerr, "build_cache is only supported for XPGraph.");
+    return;
+  }
   if (verbose) print("Building cache on GPU... ");
-  graph_.clear_cache();
+  xpgraph->clear_cache();
   auto before = getGpuMemInfo();
-  auto time = xpg::measure_time<std::chrono::milliseconds>([this] { graph_.build_cache(); });
+  auto time = xpg::measure_time<std::chrono::milliseconds>([=] { xpgraph->build_cache(); });
   auto after = getGpuMemInfo();
   auto used = before.free_bytes - after.free_bytes;
   if (verbose) {
     println("Done. ({:.3f} s)", time.count() / 1000.0);
     println("  GPU memory: {:.3f} GiB used, {:.3f} GiB free, {:.3f} GiB total",
-            used / GiBd, after.free_bytes / GiBd, after.total_bytes / GiBd);
+            used / 1.0_GB, after.free_bytes / 1.0_GB, after.total_bytes / 1.0_GB);
   }
 }
 
 void PackageLoader::compact(bool verbose) const {
+  auto *xpgraph = dynamic_cast<XPGraph *>(&graph_);
+  if (!xpgraph) {
+    println(std::cerr, "compact is only supported for XPGraph.");
+    return;
+  }
   if (verbose) print("Compact storage... ");
-  auto time = xpg::measure_time<std::chrono::milliseconds>([this] { graph_.compact(); });
+  auto time = xpg::measure_time<std::chrono::milliseconds>([=] { xpgraph->compact(); });
   if (verbose) {
     println("Done. ({:.3f} s)", time.count() / 1000.0);
     println("  Total: {} packages, {} versions, {} dependencies (disk)",
-            graph_.package_count(), graph_.version_count(), graph_.dependency_count());
+            xpgraph->package_count(), xpgraph->version_count(), xpgraph->dependency_count());
+  }
+}
+
+void PackageLoader::clear(bool verbose) const {
+  auto *mgxpgraph = dynamic_cast<MGXPGraph *>(&graph_);
+  if (!mgxpgraph) {
+    println(std::cerr, "clear is only supported for MGXPGraph.");
+    return;
+  }
+  if (verbose) print("Clearing Memgraph... ");
+  auto pcount = mgxpgraph->package_count();
+  auto vcount = mgxpgraph->version_count();
+  auto dcount = mgxpgraph->dependency_count();
+  auto time = measure_time<std::chrono::milliseconds>([=] { mgxpgraph->clear(); });
+  if (verbose) {
+    pcount -= mgxpgraph->package_count();
+    vcount -= mgxpgraph->version_count();
+    dcount -= mgxpgraph->dependency_count();
+    println("Done. ({:.3f} s)", time.count() / 1000.0);
+    println("  Cleared: - {} packages, - {} versions, - {} dependencies (memgraph)", pcount, vcount, dcount);
   }
 }
 
