@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <string>
 #include <CLI/CLI11.hpp>
+#include <nlohmann/json.hpp>
+#include "json_serialization.hpp"
 #include "mgxpgraph.hpp"
 #include "utils.hpp"
 #include "xpgraph.hpp"
@@ -20,7 +22,7 @@ public:
     parse_args(argc, argv);
     init_graph();
     run_profiling();
-    return sink_ == 0;
+    return 0;
   }
 
 private:
@@ -35,7 +37,6 @@ private:
   bool use_query_modules_ = false;
   std::string host_ = "127.0.0.1";
   std::uint16_t port_ = 7687;
-  volatile std::size_t sink_ = 0;
 
   void parse_args(int argc, char *argv[]) {
     CLI::App app("XPGraph query dependencies profile");
@@ -70,14 +71,8 @@ private:
     while (std::chrono::steady_clock::now() < deadline) {
       auto package = xpgraph_.get_package(distribution(generator));
       if (package.versions().size() <= 2) continue;
-      if (test_memgraph_ && use_query_modules_)
-        auto str = mgxpgraph_.query_dependencies_use_query_modules(
-          package.name, "", "", depth_, format_ == "tree", test_memgraph_ ? use_query_modules_ : use_gpu_, true, true);
-      else {
-        nlohmann::ordered_json json = query_graph().query_dependencies(
-          package.name, "", "", depth_, format_ == "tree", test_memgraph_ ? use_query_modules_ : use_gpu_);
-        std::string str = json;
-      }
+      auto _ = query_graph().query_dependencies(
+        package.name, "", "", depth_, format_ == "tree", test_memgraph_ ? use_query_modules_ : use_gpu_);
       if (test_memgraph_) mgxpgraph_.clear_arena();
     }
   }

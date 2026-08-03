@@ -21,10 +21,6 @@ target_link_libraries(pyxpgraph PRIVATE libxpgraph Python3::Python)
 set_target_properties(pyxpgraph PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python)
 
 add_library(qmxpgraph SHARED query_module.cpp config.cu)
-target_include_directories(qmxpgraph PRIVATE
-        "$ENV{HOME}/opt/memgraph-3.12.0/usr/include"
-        "$ENV{HOME}/opt/memgraph-3.12.0-source/include"
-)
 set_target_properties(qmxpgraph PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         PREFIX ""

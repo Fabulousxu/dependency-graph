@@ -8,10 +8,42 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <nlohmann/json.hpp>
-#include "json_serialization.hpp"
 
 namespace xpg {
+
+void from_mg_list(const mg::ConstList &value, DependencyTree &result, std::deque<std::string> &arena) {
+  result.name = arena.emplace_back(value[0].ValueString());
+  result.type = arena.emplace_back(value[1].ValueString());
+  result.version_constraint = arena.emplace_back(value[2].ValueString());
+  result.architecture_constraint = arena.emplace_back(value[3].ValueString());
+  for (const auto child : value[4].ValueList())
+    from_mg_list(child.ValueList(), result.single_dependencies.emplace_back(), arena);
+  for (const auto vgroup : value[5].ValueList()) {
+    auto &group = result.alternative_dependencies.emplace_back();
+    for (const auto child : vgroup.ValueList()) from_mg_list(child.ValueList(), group.emplace_back(), arena);
+  }
+}
+
+void from_mg_list(const mg::ConstList &value, DependencyInfo &result, std::deque<std::string> &arena) {
+  result.name = arena.emplace_back(value[0].ValueString());
+  result.type = arena.emplace_back(value[1].ValueString());
+  result.version_constraint = arena.emplace_back(value[2].ValueString());
+  result.architecture_constraint = arena.emplace_back(value[3].ValueString());
+}
+
+void from_mg_list(const mg::ConstList &value, DependencyFlat &result, std::deque<std::string> &arena) {
+  result.reserve(value.size());
+  for (const auto vlevel : value) {
+    auto levell = vlevel.ValueList();
+    auto &level = result.emplace_back();
+    for (const auto info : levell[0].ValueList())
+      from_mg_list(info.ValueList(), level.single_dependencies.emplace_back(), arena);
+    for (const auto group_value : levell[1].ValueList()) {
+      auto &group = level.alternative_dependencies.emplace_back();
+      for (const auto info : group_value.ValueList()) from_mg_list(info.ValueList(), group.emplace_back(), arena);
+    }
+  }
+}
 
 void MGXPGraph::execute_query(std::string_view cypher) const {
   if (!client_) throw std::runtime_error("Memgraph is not connected");
@@ -352,19 +384,9 @@ std::variant<DependencyTree, DependencyFlat> MGXPGraph::query_dependencies(
   std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
   bool use_query_modules, bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const {
   if (depth == 1) tree = false;
-  if (use_query_modules) {
-    auto serialized = query_dependencies_use_query_modules(name, version, architecture, depth, tree,
-                                                           satisfy_architecture, satisfy_version, expand_alternative);
-    auto json = nlohmann::ordered_json::parse(serialized);
-    if (tree) {
-      DependencyTree result;
-      from_json(json, result, arena_);
-      return result;
-    }
-    DependencyFlat result;
-    from_json(json, result, arena_);
-    return result;
-  }
+  if (use_query_modules)
+    return query_dependencies_use_query_modules(name, version, architecture, depth, tree, satisfy_architecture,
+                                                satisfy_version, expand_alternative);
   if (tree)
     return query_dependency_tree(name, version, architecture, depth, satisfy_architecture, satisfy_version,
                                  expand_alternative);
@@ -523,9 +545,10 @@ DependencyFlat MGXPGraph::query_dependency_flat(
   return result;
 }
 
-std::string MGXPGraph::query_dependencies_use_query_modules(
+std::variant<DependencyTree, DependencyFlat> MGXPGraph::query_dependencies_use_query_modules(
   std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
   bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const {
+  if (depth == 1) tree = false;
   mg::Map params(8);
   params.Insert("name", mg::Value(name));
   params.Insert("version", mg::Value(version));
@@ -539,9 +562,22 @@ std::string MGXPGraph::query_dependencies_use_query_modules(
                 "$satisfy_architecture, $satisfy_version, $expand_alternative) YIELD result RETURN result", params);
   auto record = client_->FetchOne();
   if (!record || record->empty()) throw std::runtime_error("qmxpgraph.query_dependencies returned no rows");
-  auto result = std::string(record->front().ValueString());
-  client_->DiscardAll();
-  return result;
+  try {
+    auto encoded = record->front().AsConstValue().ValueList();
+    std::variant<DependencyTree, DependencyFlat> result;
+    if (tree) {
+      result.emplace<DependencyTree>();
+      from_mg_list(encoded, std::get<DependencyTree>(result), arena_);
+    } else {
+      result.emplace<DependencyFlat>();
+      from_mg_list(encoded, std::get<DependencyFlat>(result), arena_);
+    }
+    client_->DiscardAll();
+    return result;
+  } catch (...) {
+    client_->DiscardAll();
+    throw;
+  }
 }
 
 } // namespace xpg

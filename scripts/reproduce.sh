@@ -8,6 +8,7 @@ RELWITHDEBINFO_DIR="$ROOT_DIR/build/relwithdebinfo"
 PRESET_DATA_DIR="${PRESET_DATA_DIR:-$ROOT_DIR/data}"
 REPO_CACHE_DIR="${REPO_CACHE_DIR:-$ROOT_DIR/data/repos}"
 MEMGRAPH_BIN="${MEMGRAPH_BIN:-$HOME/opt/memgraph-3.12.0/usr/lib/memgraph/memgraph}"
+PERF_MEMGRAPH_BIN="${PERF_MEMGRAPH_BIN:-$HOME/opt/memgraph-3.12.0-source/build/memgraph}"
 
 memgraph_pid=""
 
@@ -195,12 +196,16 @@ start_memgraph() {
   local bolt_port="$(preset_bolt_port "$preset")"
   local logs_dir="$data_dir/logs"
   local stderr_file="$logs_dir/memgraph.stderr.log"
+  local memgraph_bin="$MEMGRAPH_BIN"
   local query_modules_dir="$RELEASE_DIR/query_modules"
-  if [[ -n "$perf_output" ]]; then query_modules_dir="$RELWITHDEBINFO_DIR/query_modules"; fi
+  if [[ -n "$perf_output" ]]; then
+    memgraph_bin="$PERF_MEMGRAPH_BIN"
+    query_modules_dir="$RELWITHDEBINFO_DIR/query_modules"
+  fi
 
   mkdir -p "$data_dir" "$logs_dir"
   local memgraph_cmd=(
-    "$MEMGRAPH_BIN"
+    "$memgraph_bin"
     --data-directory="$data_dir"
     --bolt-address=127.0.0.1
     --bolt-port="$bolt_port"
@@ -275,13 +280,12 @@ perf_run() {
   local output="$1"
   local status
   shift
-  mkdir -p "$output"
+  mkdir -p "$(dirname "$output")"
   if perf record -F 199 -g --call-graph dwarf -o "${output}.data" -- "$@"; then
     status=0
   else
     status=$?
   fi
-  generate_flamegraph "$output"
   return "$status"
 }
 
@@ -417,6 +421,9 @@ case "${1:-}" in
       wait "$memgraph_pid"
       backend_status=$?
       memgraph_pid=""
+      if [[ -f "${client_output}.data" ]]; then
+        generate_flamegraph "$client_output"
+      fi
       if [[ -f "${backend_output}.data" ]]; then
         generate_flamegraph "$backend_output"
       fi
@@ -430,12 +437,19 @@ case "${1:-}" in
     fi
     use_gpu=()
     if [[ "$query_mode" == "gpu" ]]; then use_gpu=(--use-gpu); fi
+    set +e
     perf_run "$output" "$RELWITHDEBINFO_DIR/bin/query_dependencies_profiling" \
       --data-directory "$PRESET_DATA_DIR/xpgraph/$preset" \
       --depth "$depth" \
       --format "$query_format" \
       "${use_gpu[@]}" \
       --test-time "$test_time"
+    status=$?
+    if [[ -f "${output}.data" ]]; then
+      generate_flamegraph "$output"
+    fi
+    set -e
+    exit "$status"
     ;;
 
   ""|-h|--help|help)
