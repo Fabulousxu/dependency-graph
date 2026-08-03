@@ -172,17 +172,9 @@ private:
 
   static std::chrono::microseconds run_query(GraphBase &graph, std::string_view name, std::size_t depth, bool tree,
                                              bool use_accelerator) {
-    std::chrono::microseconds elapsed;
-    if (auto *mgxpgraph = dynamic_cast<MGXPGraph *>(&graph); mgxpgraph && use_accelerator)
-      elapsed = measure_time<std::chrono::microseconds>([&, depth] {
-        auto str = mgxpgraph->query_dependencies_use_query_modules(name, "", "", depth, tree, true, true, true);
-      });
-    else
-      elapsed = measure_time<std::chrono::microseconds>([&, depth] {
-        // nlohmann::ordered_json json = graph.query_dependencies(name, "", "", depth, tree, use_accelerator);
-        // auto str = json.dump();
-          graph.query_dependencies(name, "", "", depth, tree, use_accelerator);
-      });
+    auto elapsed = measure_time<std::chrono::microseconds>([&, depth] {
+      auto _ = graph.query_dependencies(name, "", "", depth, tree, use_accelerator);
+    });
     if (auto *mgxpgraph = dynamic_cast<MGXPGraph *>(&graph)) mgxpgraph->clear_arena();
     return elapsed;
   }

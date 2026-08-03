@@ -71,7 +71,7 @@ public:
   DependencyFlat query_dependency_flat(
     std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
     bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const;
-  std::string query_dependencies_use_query_modules(
+  std::variant<DependencyTree, DependencyFlat> query_dependencies_use_query_modules(
     std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth, bool tree,
     bool satisfy_architecture, bool satisfy_version, bool expand_alternative) const;
 

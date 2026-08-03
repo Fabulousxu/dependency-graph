@@ -4,13 +4,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 #include <memgraph/mgp.hpp>
-#include <nlohmann/json.hpp>
 #include "config.hpp"
-#include "json_serialization.hpp"
 #include "types.hpp"
 
 namespace xpg {
@@ -37,6 +37,7 @@ DependencyTree query_dependency_tree(
   mgp_graph *graph, std::string_view name, std::string_view version, std::string_view architecture, std::size_t depth,
   bool satisfy_architecture, bool satisfy_version, bool expand_alternative, std::deque<std::string> &arena) {
   DependencyTree result;
+  result.type = "";
   result.name = arena.emplace_back(name);
   result.version_constraint = arena.emplace_back(version);
   result.architecture_constraint = arena.emplace_back(architecture);
@@ -138,6 +139,53 @@ DependencyFlat query_dependency_flat(
   return result;
 }
 
+mgp::List to_mgp_list(const DependencyTree &tree) {
+  mgp::List single(tree.single_dependencies.size());
+  for (const auto &child : tree.single_dependencies) single.Append(mgp::Value(to_mgp_list(child)));
+  mgp::List alternative(tree.alternative_dependencies.size());
+  for (const auto &group : tree.alternative_dependencies) {
+    mgp::List groupl(group.size());
+    for (const auto &child : group) groupl.Append(mgp::Value(to_mgp_list(child)));
+    alternative.Append(mgp::Value(std::move(groupl)));
+  }
+  mgp::List result(6);
+  result.Append(mgp::Value(tree.name));
+  result.Append(mgp::Value(tree.type));
+  result.Append(mgp::Value(tree.version_constraint));
+  result.Append(mgp::Value(tree.architecture_constraint));
+  result.Append(mgp::Value(std::move(single)));
+  result.Append(mgp::Value(std::move(alternative)));
+  return result;
+}
+
+mgp::List to_mgp_list(const DependencyInfo &info) {
+  mgp::List result(4);
+  result.Append(mgp::Value(info.name));
+  result.Append(mgp::Value(info.type));
+  result.Append(mgp::Value(info.version_constraint));
+  result.Append(mgp::Value(info.architecture_constraint));
+  return result;
+}
+
+mgp::List to_mgp_list(const DependencyFlat &flat) {
+  mgp::List result(flat.size());
+  for (const auto &level : flat) {
+    mgp::List single(level.single_dependencies.size());
+    for (const auto &info : level.single_dependencies) single.Append(mgp::Value(to_mgp_list(info)));
+    mgp::List alternative(level.alternative_dependencies.size());
+    for (const auto &group : level.alternative_dependencies) {
+      mgp::List groupl(group.size());
+      for (const auto &info : group) groupl.Append(mgp::Value(to_mgp_list(info)));
+      alternative.Append(mgp::Value(std::move(groupl)));
+    }
+    mgp::List levell(2);
+    levell.Append(mgp::Value(std::move(single)));
+    levell.Append(mgp::Value(std::move(alternative)));
+    result.Append(mgp::Value(std::move(levell)));
+  }
+  return result;
+}
+
 void query_dependencies(mgp_list *args, mgp_graph *graph, mgp_result *result, mgp_memory *memory) {
   mgp::MemoryDispatcherGuard guard{memory};
   try {
@@ -161,9 +209,9 @@ void query_dependencies(mgp_list *args, mgp_graph *graph, mgp_result *result, mg
     else
       dresult = query_dependency_flat(graph, name, version, architecture, depth, satisfy_architecture, satisfy_version,
                                       expand_alternative, arena);
-    nlohmann::ordered_json json = dresult;
     auto record = mgp::RecordFactory(result).NewRecord();
-    record.Insert("result", json.dump());
+    if (tree) record.Insert("result", to_mgp_list(std::get<DependencyTree>(dresult)));
+    else record.Insert("result", to_mgp_list(std::get<DependencyFlat>(dresult)));
   } catch (const std::exception &error) {
     mgp::RecordFactory(result).SetErrorMessage(error.what());
   } catch (...) { mgp::RecordFactory(result).SetErrorMessage("qmxpgraph query error"); }
@@ -183,7 +231,7 @@ extern "C" int mgp_init_module(mgp_module *module, mgp_memory *memory) {
                         mgp::Parameter("satisfy_architecture", mgp::Type::Bool),
                         mgp::Parameter("satisfy_version", mgp::Type::Bool),
                         mgp::Parameter("expand_alternative", mgp::Type::Bool)
-                      }, {mgp::Return("result", mgp::Type::String)}, module, memory);
+                      }, {mgp::Return("result", mgp::Type::List)}, module, memory);
   } catch (const std::exception &) { return 1; }
   return 0;
 }
